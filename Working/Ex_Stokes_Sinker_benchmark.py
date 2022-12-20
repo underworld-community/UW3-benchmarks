@@ -62,7 +62,7 @@ materialHeavyIndex = 1
 
 # Set constants for the viscosity of each material
 viscBG     =  1.0
-viscSphere = 10.0
+viscSphere = 1000.0
 
 # set density of the different materials
 densityBG     =  0.0
@@ -74,11 +74,9 @@ y_pos = sphereCentre[1] - sphereRadius
 
 nsteps = 10
 
-swarmGPC = 2
-
 # +
 # mesh = uw.meshing.UnstructuredSimplexBox(
-#     minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / res, regular=False
+#     minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / res, regular=True
 # )
 
 mesh = uw.meshing.StructuredQuadBox(minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0),  elementRes=(res,res))
@@ -93,6 +91,7 @@ stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=True)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
 
 
+# +
 ### No slip BC
 sol_vel = sympy.Matrix([0, 0])
 stokes.add_dirichlet_bc(
@@ -102,11 +101,21 @@ stokes.add_dirichlet_bc(
     sol_vel, ["Left", "Right"], [0, 1]
 )  # left/right: components, function, markers
 
+### free slip BC
+
+# stokes.add_dirichlet_bc(
+#     sol_vel, ["Top", "Bottom"], [1]
+# )  # top/bottom: components, function, markers
+# stokes.add_dirichlet_bc(
+#     sol_vel, ["Left", "Right"], [0]
+# )  # left/right: components, function, markers
+# -
+
 
 # ####  Add a particle swarm which is used to track material properties 
 
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=4, proxy_continuous=True)
+material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=True)
 swarm.populate(fill_param=4)
 
 # Create an array which contains:

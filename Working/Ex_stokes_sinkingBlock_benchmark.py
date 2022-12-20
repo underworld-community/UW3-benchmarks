@@ -8,6 +8,8 @@
 # - Only value to change is: **viscBlock**
 #
 # - utilises the UW scaling module to convert from dimensional to non-dimensional values
+#
+# - Includes a passive tracer that is handled by UW swarm routines (and should be parallel safe).
 
 # %%
 from petsc4py import PETSc
@@ -103,7 +105,7 @@ densityBG     = 3.2e3/ref_density
 densityBlock  = 3.3e3/ref_density
 
 
-nsteps = 41
+nsteps = 2
 
 
 swarmGPC = 2
@@ -184,6 +186,15 @@ tracer = np.zeros(shape=(1,2))
 tracer[:,0], tracer[:,1] = x_pos, y_pos
 
 # %%
+passiveSwarm = uw.swarm.Swarm(mesh)
+
+passiveSwarm.dm.finalizeFieldRegister()
+
+passiveSwarm.dm.addNPoints(npoints=len(tracer))
+
+passiveSwarm.dm.setPointCoordinates(tracer)
+
+# %%
 mat_density = np.array([densityBG,densityBlock])
 
 density = mat_density[0] * material.sym[0] + \
@@ -244,7 +255,7 @@ def plot_mat():
 
     pl.show(cpos="xy")
     
-if render == True:
+if render == True and uw.mpi.size == 1:
     plot_mat()
 
 # %%
@@ -290,12 +301,14 @@ ySinker = np.zeros(nsteps)*np.nan
 # %%
 while step < nsteps:
     ### Get the position of the sinking ball
-    ymin          = tracer[:,1].min()
+    with passiveSwarm.access(passiveSwarm):
+        if passiveSwarm.dm.getLocalSize() > 0:
+            ymin = passiveSwarm.data[:,1].min()
     ySinker[step] = ymin
     tSinker[step] = time
     
     ### print some stuff    
-    if uw.mpi.rank==0:
+    if passiveSwarm.dm.getLocalSize() > 0:
         print(f"Step: {str(step).rjust(3)}, time: {dim(time, u.megayear).m:6.2f} [Myr], tracer:  {dim(ymin, u.kilometer):6.2f} [km]")
     
     ### solve stokes 
@@ -305,17 +318,20 @@ while step < nsteps:
 
     ### advect the swarm
     swarm.advection(stokes.u.sym, dt, corrector=False)
+    passiveSwarm.advection(stokes.u.sym, dt, corrector=False)
     
     ### advect tracer
-    vel_on_tracer = uw.function.evaluate(stokes.u.fn,tracer)
-    tracer += dt*vel_on_tracer
+    # vel_on_tracer = uw.function.evaluate(stokes.u.fn,tracer)
+    # tracer += dt*vel_on_tracer
     
         
     step+=1
     time+=dt
 
 # %%
-if uw.mpi.rank==0:
+
+# %%
+if passiveSwarm.dm.getLocalSize() > 0:
     
     import matplotlib.pyplot as plt
     
@@ -332,13 +348,13 @@ if uw.mpi.rank==0:
     print(f'Velocity:         v = {UWvelocity} m/s')
 
     
-
-    fig = plt.figure()
-    fig.set_size_inches(12, 6)
-    ax = fig.add_subplot(1,1,1)
-    ax.plot(tSinker.m, ySinker.m) 
-    ax.set_xlabel('Time [Myr]')
-    ax.set_ylabel('Sinker position [km]')
+    if uw.mpi.size == 0:
+        fig = plt.figure()
+        fig.set_size_inches(12, 6)
+        ax = fig.add_subplot(1,1,1)
+        ax.plot(tSinker.m, ySinker.m) 
+        ax.set_xlabel('Time [Myr]')
+        ax.set_ylabel('Sinker position [km]')
 
 # %% [markdown]
 # ##### compare values against published results
@@ -377,7 +393,7 @@ f = interp1d(visc_ratio, paperVelocity, kind='cubic')
 
 x = np.arange(-6,6, 0.01)
 
-if uw.mpi.rank == 0:
+if uw.mpi.size == 0:
     import matplotlib.pyplot as plt
     plt.title('check benchmark')
     plt.plot(x, f(x), label='benchmark velocity curve', c='k')
@@ -385,7 +401,7 @@ if uw.mpi.rank == 0:
     plt.legend()
 
 # %%
-if render == True:
+if render == True and uw.mpi.size == 1:
     plot_mat()
 
 # %%
