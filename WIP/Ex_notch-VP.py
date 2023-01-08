@@ -26,32 +26,10 @@ from mpi4py import MPI
 
 
 # %%
-sys = PETSc.Sys()
-sys.pushErrorHandler("traceback")
-
-
-# %%
 options = PETSc.Options()
-# options["help"] = None
-# options["pc_type"]  = "svd"
-#options["ksp_rtol"] =  1.0e-6
-#options["ksp_atol"] =  1.0e-6
-#options["ksp_monitor"] = None
-# options["snes_type"]  = "fas"
-#options["snes_type"]="ksponly"
+
 options["snes_converged_reason"] = None
 options["snes_monitor_short"] = None
-
-# options["snes_view"]=None
-# options["snes_test_jacobian"] = None
-# options["snes_rtol"] = 1.0e-2  # set this low to force single SNES it. 
-# options["snes_max_it"] = 3
-
-# options["mat_type"]="aij"
-
-# options["ksp_type"]="preonly"
-# options["pc_type"] = "lu"
-# options["pc_factor_mat_solver_type"] = "mumps"
 
 sys = PETSc.Sys()
 sys.pushErrorHandler("traceback")
@@ -137,7 +115,7 @@ if uw.mpi.rank == 0:
 
 # %%
 ## Set the resolution.
-res = 20
+res = 10
 
 # %%
 ## set box properties
@@ -156,7 +134,10 @@ BrickLength = (800. / ref_length)
 # %%
 ### set global and material properties
 minVisc    = 1e20 / ref_viscosity
-maxVisc    = 1e25 / ref_viscosity
+maxVisc    = 1e24 / ref_viscosity
+
+
+vel = ndim(2e-11 * u.meter / u.second)
 
 
 ### define some index values
@@ -176,20 +157,20 @@ viscosityBrick  = 1e20 /ref_viscosity   ### Pa s
 
 
 ''' Gauss point count, creates the number of particles in each cell '''
-swarmGPC = 4
+swarmGPC = 2
 
 # %%
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=(1.0 / res), regular=False)
+# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=(1.0 / res), regular=False, qdegree=3)
 
 
-# mesh = uw.meshing.StructuredQuadBox(elementRes=((res*4), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax))
+mesh = uw.meshing.StructuredQuadBox(elementRes=((res*4), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax))
 
 
 # %%
 # Create Stokes object
 
-v      = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
-p      = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
+v = uw.discretisation.MeshVariable(r"U", mesh, mesh.dim, degree=2)
+p = uw.discretisation.MeshVariable(r"P", mesh, 1, degree=1, continuous=True)
 lithoP = uw.discretisation.MeshVariable("lithoP", mesh, 1, degree=1)
 
 strain_rate_inv2 = uw.discretisation.MeshVariable("eps", mesh, 1, degree=1)
@@ -233,7 +214,7 @@ def updateFields():
     nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
     nodal_visc_calc.solve(_force_setup=True)
 
-    nodal_tau_inv2.uw_function = stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+    nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
     nodal_tau_inv2.solve(_force_setup=True)
 
 
@@ -303,21 +284,18 @@ def SZAnalysis():
         
 
 # %%
-''' free slip bottom '''
-stokes.add_dirichlet_bc(sympy.Matrix([0, 0]), "Bottom", (1,))
+### open top, imposed sides, free-slip bottom
 
-''' open top '''
-# # stokes.add_dirichlet_bc(0.0,  "Top", 1)
-
-
-''' velocity sides '''
-stokes.add_dirichlet_bc(sympy.Matrix([ 1, 0]), "Left", (0,))
-stokes.add_dirichlet_bc(sympy.Matrix([-1, 0]), "Right", (0,))
+stokes.add_dirichlet_bc(vel, "Left", 0)
+stokes.add_dirichlet_bc(0.0,    "Left", 1)
+stokes.add_dirichlet_bc(-vel, "Right", 0)
+stokes.add_dirichlet_bc(0.0, "Right", 1)
+stokes.add_dirichlet_bc(0.0, "Bottom", 1)
 
 
 # %%
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.IntType) # uw.swarm.IndexSwarmVariable("M", swarm, indices=2)
+material = swarm.add_variable(name="materialVariable")
 swarm.populate(fill_param=swarmGPC)
 
 # %%
@@ -412,7 +390,7 @@ def plotFig():
             cmap="coolwarm_r",
             edge_color="Black",
             show_edges=False,
-            scalars="Visc",
+            scalars="SR",
             use_transparency=False,
             log_scale=True,
             opacity=0.5)
@@ -437,18 +415,28 @@ density = Piecewise( (densityBG, Abs(material.sym[0] - materialBG) < 0.5),
 stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density])
 
 # %%
+stokes.constitutive_model.Parameters.viscosity = 1.
+
+stokes.saddle_preconditioner = 1
+stokes.penalty = 1.0
+
+stokes.solve(zero_init_guess=True)
+
+# %%
 plotFig()
 
 # %%
 ### linear solve
 ### linear viscosity
-stokes.penalty = 0.
 
 viscosityL = Piecewise( (1., Abs(material.sym[0] - materialBG) < 0.5),
                         (0.1,                                True ))
 
 stokes.constitutive_model.Parameters.viscosity = viscosityL
-# stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
+
+stokes.saddle_preconditioner = 1 / viscosityL
+stokes.penalty = 1.0
+
 stokes.solve(zero_init_guess=True)
 
 # %%
@@ -466,6 +454,9 @@ viscosityL = Piecewise( (viscoistyBG, Abs(material.sym[0] - materialBG) < 0.5),
 
 ### linear viscosity
 stokes.constitutive_model.Parameters.viscosity = viscosityL
+
+stokes.saddle_preconditioner = 1 / viscosityL
+
 # stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
 stokes.solve(zero_init_guess=False)
 
@@ -477,7 +468,7 @@ SZAnalysis()
 
 # %%
 # sigmaBG = 40e6/ref_stress ### Pa
-sigmaBG = ((40e6/ref_stress)*np.cos(np.deg2rad(FA_BG))) + (lithoP.fn * np.sin(np.deg2rad(FA_BG)))
+sigmaBG = ((cohesionBG)*np.cos(np.deg2rad(FA_BG))) + (lithoP.fn * np.sin(np.deg2rad(FA_BG)))
 
 ### Solves but gives wrong viscosity, SR and visc are correlated (Should be anticorrelated).
 plasticity = sigmaBG / (2. * (stokes._Einv2+1.0e-18))  # sympy.Min((sigmaBG / (2. * (strainRate_2ndInvariant+1.0e-18)), viscoistyBG)
@@ -493,15 +484,56 @@ NLBGVisc = Min(plasticity, viscoistyBG)
 
 
 viscosityNL  = Piecewise( (NLBGVisc,   Abs(material.sym[0] - materialBG) < 0.5),
-                         (viscosityBrick,                         True ))
+                          (viscosityBrick,                         True ))
 
 
 # %%
+# Set solve options here (or remove default values
+stokes.petsc_options["ksp_monitor"] = None
+
+stokes.tolerance = 1.0e-4
+stokes.petsc_options["snes_atol"] = 1e-4
+
+stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
+stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
+
+stokes.petsc_options[
+    "fieldsplit_pressure_pc_type"
+] = "gamg"  # can use gasm / gamg / lu here
+
+stokes.petsc_options[
+    "fieldsplit_pressure_pc_gasm_type"
+] = "basic"  # can use gasm / gamg / lu here
+
+stokes.petsc_options[
+    "fieldsplit_pressure_pc_gamg_type"
+] = "classical"  # can use gasm / gamg / lu here
+
+stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
+
+# # stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 5
+# # stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
+# # stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_converged_maxits"] = None
 
 
+# # Fast: preonly plus gasm / gamg / mumps
+# # Robust: gmres plus gasm / gamg / mumps
+
+# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
+# # stokes.petsc_options["fieldsplit_velocity_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here
+
+# stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
+# stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
+
+# stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
+
+stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
+
+# %%
 ### NL viscosity
-stokes.constitutive_model.Parameters.viscosity = viscosityNL
-# stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
+stokes.constitutive_model.Parameters.viscosity = sympy.Max( sympy.Min( viscosityNL, maxVisc), minVisc )
+
+stokes.saddle_preconditioner = 1.0 / viscosityNL
 ### NL solve
 stokes.solve(zero_init_guess=False)
 
