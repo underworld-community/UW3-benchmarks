@@ -136,8 +136,8 @@ xmin, xmax = 0., ndim(1000*u.kilometer)
 ymin, ymax = 0., ndim(660*u.kilometer)
 
 # %%
-resx = 150
-resy = 99
+resx = 50
+resy = 33
 
 # %% [markdown]
 # ### Create mesh
@@ -553,6 +553,8 @@ stokes.saddle_preconditioner = 1.0 / viscosity
 stokes.penalty = 0.1
 
 
+# %%
+
 # %% [markdown]
 # #### Save mesh to h5/xdmf file
 # Function to put in solver loop
@@ -561,8 +563,8 @@ stokes.penalty = 0.1
 def saveData(step, outputPath, time):
     
     ### save mesh vars
-    fname = f"{outputPath}{'step_'}{step:02d}.h5"
-    xfname = f"{outputPath}{'step_'}{step:02d}.xdmf"
+    fname = f"{outputPath}mesh_{'step_'}{step:02d}.h5"
+    xfname = f"{outputPath}mesh_{'step_'}{step:02d}.xmf"
     viewer = PETSc.ViewerHDF5().createHDF5(fname, mode=PETSc.Viewer.Mode.WRITE,  comm=PETSc.COMM_WORLD)
 
     viewer(mesh.dm)
@@ -577,21 +579,13 @@ def saveData(step, outputPath, time):
     viewer.destroy()              
     generateXdmf(fname, xfname)
     
-#     if uw.mpi.size == 1:
-#         import pyvista as pv
-#         with swarm.access():
-#             points = np.zeros((swarm.data.shape[0],3))
-#             points[:,0] = swarm.data[:,0]
-#             points[:,1] = swarm.data[:,1]
-#             points[:,2] = 0.0
-
-#         point_cloud = pv.PolyData(points)
+    ### save all swarm variables attached to DM
+    x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
+    swarm.dm.viewXDMF(x_swarm_fname)
+    
 
 
-#         with swarm.access():
-#             point_cloud.point_data["M"] = materialVariable.data.copy()
-
-#         point_cloud.save(f"./{outputPath}{'swarm_step_'}{step:02d}.vtk")
+# %%
 
 # %%
 step   = 0

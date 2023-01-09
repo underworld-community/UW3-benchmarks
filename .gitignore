@@ -1,4 +1,11 @@
 
+### ignore Mac file stuff
 *.DS_Store
-Working/.*
+### ignore all output files
 *.vtk
+*.h5
+*.msh
+### ignore certain dirs
+*output*
+*ipynb_checkpoints*
+

@@ -247,7 +247,15 @@ while step < nsteps:
     tempData = diffusion_1D(
         sample_points=sample_points[:, 1], tempProfile=tempData, k=k, model_dt=dt
     )
-
+    
+    dt0 = adv_diff.estimate_dt()
+    
+    dt1 = mesh.get_min_radius() ** 2 / k
+    
+    print(dt0, dt1)
+    
+    dt = adv_diff.estimate_dt()
+    
     ### diffuse through underworld
     adv_diff.solve(timestep=dt)
 
