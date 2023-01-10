@@ -32,22 +32,17 @@ if uw.mpi.size == 1:
 else:
     render = False
     
-render = False
-    
     
 ### linear or nonlinear version
 linear = False ### False for NL version
 
 
 # %%
-## number of steps
-nsteps = 101
-
 ## swarm gauss point count (particle distribution)
 swarmGPC = 2
 
 # %%
-outputPath = './output/slabDetachment/'
+outputPath = './output/notchBenchmark/'
 
 
 if uw.mpi.rank == 0:
@@ -73,17 +68,16 @@ dim  = uw.scaling.dimensionalise
 
 # %%
 ### set reference values
-refLength    = 1000e3
-refDensity   = 3.3e3
+refLength    = 100e3
+refDensity   = 2.7e3
 refGravity   = 9.81
 refVelocity  = (1*u.centimeter/u.year).to(u.meter/u.second).m ### 1 cm/yr in m/s
-refViscosity = 1e21
+refViscosity = 1e22
 refPressure  = refDensity * refGravity * refLength
 refTime      = refViscosity / refPressure
 
 bodyforce    = refDensity  * u.kilogram / u.metre**3 * refGravity * u.meter / u.second**2
 
-# %%
 ### create unit registry
 KL = refLength * u.meter
 Kt = refTime   * u.second
@@ -96,6 +90,8 @@ scaling_coefficients["[mass]"]= KM
 scaling_coefficients
 
 # %%
+
+# %%
 ### fundamental values
 ref_length    = uw.scaling.dimensionalise(1., u.meter).magnitude
 
@@ -104,6 +100,8 @@ ref_length_km = uw.scaling.dimensionalise(1., u.kilometer).magnitude
 ref_density   =  uw.scaling.dimensionalise(1., u.kilogram/u.meter**3).magnitude
 
 ref_gravity   = uw.scaling.dimensionalise(1., u.meter/u.second**2).magnitude
+
+ref_temp      = uw.scaling.dimensionalise(1., u.kelvin).magnitude
 
 ref_velocity  = uw.scaling.dimensionalise(1., u.meter/u.second).magnitude
 
@@ -119,24 +117,30 @@ ref_stress    = ref_pressure
 ref_viscosity = ref_pressure * ref_time
 
 ### Key ND values
-# ND_gravity     = 9.81    / ref_gravity
-ND_gravity = nd(refGravity * u.meter / u.second**2)
+ND_gravity     = 9.81    / ref_gravity
 
 # %%
 ### add material index
-BGIndex = 0
-SlabIndex = 1
+BGIndex    = 0
+BrickIndex = 1
 
 # %% [markdown]
-# Set up dimensions of model and sinking block
+# Set up dimensions of model and brick
 
 # %%
-xmin, xmax = 0., ndim(1000*u.kilometer)
-ymin, ymax = 0., ndim(660*u.kilometer)
+xmin, xmax = 0., ndim(40*u.kilometer)
+ymin, ymax = 0., ndim(10*u.kilometer)
+
+## set brick height and length
+BrickHeight = (400. / ref_length)
+BrickLength = (800. / ref_length)
 
 # %%
-resx = 50
-resy = 33
+resx = 40
+resy = 10
+
+# %%
+vel = ndim(2e-11 * u.meter / u.second)
 
 # %% [markdown]
 # ### Create mesh
@@ -192,11 +196,10 @@ swarm.populate(fill_param=swarmGPC)
 for i in [material, materialVariable]:
         with swarm.access(i):
             i.data[:] = BGIndex
-            i.data[(swarm.data[:,1] >= ndim((660-80) * u.kilometer))] = SlabIndex
+            i.data[(swarm.data[:,1] <= BrickHeight) & 
+                  (swarm.data[:,0] >= (((xmax - xmin) / 2.) - (BrickLength / 2.)) ) & 
+                  (swarm.data[:,0] <= (((xmax - xmin) / 2.) + (BrickLength / 2.)) )] = BrickIndex
 
-            i.data[(swarm.data[:,1] >= ndim((660-(250+80)) * u.kilometer)) & 
-                   (swarm.data[:,0] >= ndim((500-40)*u.kilometer)) &
-                   (swarm.data[:,0] <= ndim((500+40)*u.kilometer))] = SlabIndex
 
 
 # %% [markdown]
@@ -248,39 +251,11 @@ def updateFields(time):
 # #### Boundary conditions
 
 # %%
-sol_vel = sympy.Matrix([0.,0.])
-
-### No slip left & right
-stokes.add_dirichlet_bc( sol_vel, ["Left", "Right"],  [0,1] )  # left/right: components, function, markers
-### free slip top and bottom
-stokes.add_dirichlet_bc( sol_vel, ["Top", "Bottom"],  [1] )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc(sympy.Matrix([   vel,0.]), "Left", [0,1])
+stokes.add_dirichlet_bc(sympy.Matrix([-1*vel,0.]), "Right", [0,1])
 
 
-
-
-
-# %% [markdown]
-# ### Add a passive tracer(s)
-
-# %%
-y = np.linspace(nd((660-80)*u.kilometer), nd((660-330)*u.kilometer), 10)
-
-x0 = np.zeros_like(y) + nd((500-40)*u.kilometer)
-
-x1 = np.zeros_like(y) + nd((500+40)*u.kilometer)
-
-tracers = np.concatenate( (np.vstack([x0,y]).T, np.vstack([x1,y]).T) )
-
-# %%
-### add a tracer
-# tracer = np.zeros(shape=(1,2))
-# tracer[:,0] = nd(500*u.kilometer)
-# tracer[:,1] = nd((660 - (250+80)) * u.kilometer)
-
-# %%
-passiveSwarm = uw.swarm.Swarm(mesh)
-
-passiveSwarm.add_particles_with_coordinates(tracers)
+stokes.add_dirichlet_bc(0.0, "Bottom", 1)
 
 
 # %%
@@ -380,15 +355,15 @@ def globalPassiveSwarmCoords(swarm, bcast=True, rootProc=0):
 
 
 # %% [markdown]
-# #### Set up density and viscosity of materials
+# #### Set up density of materials
 
 # %%
 ### set density of materials
-densityBG     = nd(3150* u.kilogram / u.metre**3)
-densitySlab   = nd(3300* u.kilogram / u.metre**3)
+densityBG      = 2700/ref_density
+densityBrick   = 2700/ref_density
 
 # %%
-mat_density = np.array([densityBG,densitySlab])
+mat_density = np.array([densityBG, densityBrick])
 
 density = mat_density[0] * material.sym[0] + \
           mat_density[1] * material.sym[1]
@@ -424,9 +399,9 @@ def plot_mat():
 
     point_cloud = pv.PolyData(points)
     
-    ### create point cloud for passive tracers
-    with passiveSwarm.access():
-        passiveCloud = pv.PolyData(np.vstack((passiveSwarm.data[:,0],passiveSwarm.data[:,1], np.zeros(len(passiveSwarm.data)))).T)
+    # ### create point cloud for passive tracers
+    # with passiveSwarm.access():
+    #     passiveCloud = pv.PolyData(np.vstack((passiveSwarm.data[:,0],passiveSwarm.data[:,1], np.zeros(len(passiveSwarm.data)))).T)
 
 
     with swarm.access():
@@ -448,9 +423,9 @@ def plot_mat():
     pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="M",
                         use_transparency=False, opacity=0.95)
     
-    ### add points of passive tracers
-    pl.add_mesh(passiveCloud, color='black', show_edges=True,
-                    use_transparency=False, opacity=0.95)
+    # ### add points of passive tracers
+    # pl.add_mesh(passiveCloud, color='black', show_edges=True,
+    #                 use_transparency=False, opacity=0.95)
 
 
 
@@ -459,13 +434,42 @@ def plot_mat():
 if render == True & uw.mpi.size==1:
     plot_mat()
 
+
+# %% [markdown]
+# #### Create function to save mesh and swarm vars
+
+# %%
+def saveData(step, outputPath, time):
+    
+    ### save mesh vars
+    fname = f"{outputPath}mesh_{'step_'}{step:02d}.h5"
+    xfname = f"{outputPath}mesh_{'step_'}{step:02d}.xmf"
+    viewer = PETSc.ViewerHDF5().createHDF5(fname, mode=PETSc.Viewer.Mode.WRITE,  comm=PETSc.COMM_WORLD)
+
+    viewer(mesh.dm)
+
+    ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
+    viewer(stokes.u._gvec)         # add velocity
+    viewer(stokes.p._gvec)         # add pressure
+    viewer(strain_rate_inv2._gvec) # add strain rate
+    viewer(node_viscosity._gvec)   # add viscosity
+    viewer(materialField._gvec)    # add material projection
+    viewer(timeField._gvec)        # add time
+    viewer.destroy()              
+    generateXdmf(fname, xfname)
+    
+    ### save all swarm variables attached to DM
+    x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
+    swarm.dm.viewXDMF(x_swarm_fname)
+
+
 # %%
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
 
 stokes.tolerance = 1.0e-4
-### snes_atol has to be == to viscosity contrast
-stokes.petsc_options["snes_atol"] = 1e-6
+### snes_atol has to be =< 1e-3 (dependent on res) otherwise it will not solve
+stokes.petsc_options["snes_atol"] = 1e-4
 
 stokes.petsc_options["ksp_atol"] = 1e-2
 
@@ -501,184 +505,120 @@ stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
 
 # %% [markdown]
 # ### Initial linear solve
+# viscosity is limited between 10$^{20}$ and 10$^{24}$ Pa S
+
+# %%
+minVisc = nd(1e20 *u.pascal*u.second)
+maxVisc = nd(1e24 *u.pascal*u.second)
 
 # %%
 ### linear solve
-stokes.constitutive_model.Parameters.viscosity = nd(1e21*u.pascal*u.second)
-stokes.saddle_preconditioner = 1.0 / nd(1e21*u.pascal*u.second)
+stokes.constitutive_model.Parameters.viscosity = minVisc
+stokes.saddle_preconditioner = 1.0 / ndim(ref_viscosity * u.pascal*u.second)
+
+
+# %%
 stokes.solve(zero_init_guess=True)
 
-
 # %% [markdown]
-# #### Another linear solve
+# #### Linear solve with different viscosities
 
 # %%
-# ### linear solve
+### linear viscosity
 
-# mat_viscosity = np.array([nd(1e21*u.pascal*u.second), nd(1e24*u.pascal*u.second)])
+viscosityL = np.array([maxVisc, minVisc])
 
-# viscosityMat = mat_viscosity[0] * material.sym[0] + \
-#                mat_viscosity[1] * material.sym[1] 
+viscosityL   = viscosityL[0] * material.sym[0] + \
+               viscosityL[1] * material.sym[1]  
 
 
-# stokes.constitutive_model.Parameters.viscosity = viscosityMat
-# stokes.saddle_preconditioner = 1.0 / viscosityMat
-# stokes.solve(zero_init_guess=True)
+stokes.constitutive_model.Parameters.viscosity = viscosityL
+
+stokes.saddle_preconditioner = 1 / viscosityL
+
+# stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
+stokes.solve(zero_init_guess=False)
+
+
 
 # %% [markdown]
-# #### Introduce NL viscosity
+# #### Solve for NL BG material
 
 # %%
-### Set constants for the viscosity and density of the sinker.
-viscBG        = nd(1e21*u.pascal*u.second)
-
+### Set the viscosity of the brick
+viscBrick        = nd(1e20 *u.pascal*u.second)
 
 if linear == False: 
     n = 4
-    viscSlab      = nd(4.75e11*u.pascal*u.second**(1/n))
-
-    NL_slab = viscSlab * sympy.Pow(stokes._Einv2, (1/n-1))
+    BG_visc       = nd(4.75e11*u.pascal*u.second**(1/n))
+    BG_visc       = BG_visc * sympy.Pow(stokes._Einv2, (1/n-1))
 
 
 else:
-    n = 1
-    viscSlab      = nd(2e23*u.pascal*u.second)
-    NL_slab       = viscSlab * (stokes._Einv2)
+    BG_visc      = nd(2e23*u.pascal*u.second) #4.75*1e11/ref_viscosity
+    BG_visc       = BG_visc * (stokes._Einv2)
+
+# C = nd(40e6*u.pascal)
+
+# if linear == False:
+#     BG_visc = C / (2*stokes._Einv2)
+    
+# else:
+#     BG_visc = C / (2*nd(1e-15/u.second))
 
 
 
-mat_viscosity = np.array([viscBG, NL_slab])
+mat_viscosity = np.array([BG_visc, viscBrick])
 
 viscosityMat = mat_viscosity[0] * material.sym[0] + \
                mat_viscosity[1] * material.sym[1] 
 
-# %% [markdown]
-# ##### Viscosity is limited betweeen 10$^{21}$ and 10$^{25}$ Pa S
-
-# %%
 ### add in material-based viscosity
 
-viscosity = sympy.Max(sympy.Min(viscosityMat, nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
+viscosity = sympy.Max(sympy.Min(viscosityMat, maxVisc ), minVisc )
 
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
 
 stokes.penalty = 0.1
 
-
-# %% [markdown]
-# #### Save mesh to h5/xdmf file
-# Function to put in solver loop
+stokes.solve(zero_init_guess=False)
+dt = stokes.estimate_dt()
 
 # %%
-def saveData(step, outputPath, time):
+### Set the viscosity of the brick
+viscBrick        = nd(1e20 *u.pascal*u.second)
+
+C = nd(40e6 *u.pascal)
+
+if linear == False: 
+    BG_visc = C / (2*stokes._Einv2)
     
-    ### save mesh vars
-    fname = f"{outputPath}mesh_{'step_'}{step:02d}.h5"
-    xfname = f"{outputPath}mesh_{'step_'}{step:02d}.xmf"
-    viewer = PETSc.ViewerHDF5().createHDF5(fname, mode=PETSc.Viewer.Mode.WRITE,  comm=PETSc.COMM_WORLD)
-
-    viewer(mesh.dm)
-
-    ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
-    viewer(stokes.u._gvec)         # add velocity
-    viewer(stokes.p._gvec)         # add pressure
-    viewer(strain_rate_inv2._gvec) # add strain rate
-    viewer(node_viscosity._gvec)   # add viscosity
-    viewer(materialField._gvec)    # add material projection
-    viewer(timeField._gvec)        # add time
-    viewer.destroy()              
-    generateXdmf(fname, xfname)
-    
-    ### save all swarm variables attached to DM
-    x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
-    swarm.dm.viewXDMF(x_swarm_fname)
-    
+else:
+    BG_visc = C / (2*nd(1e-15/u.second))
 
 
-# %%
-step   = 0
-time   = 0.
-
-# %%
-tSinker = np.zeros(nsteps)*np.nan
-ySinker = np.zeros(nsteps)*np.nan
-
-# %% [markdown]
-# ### Solver loop for multiple iterations
-
-# %%
-while step < nsteps:
-    ### Get the position of the sinking ball
-    PTdata = globalPassiveSwarmCoords(swarm=passiveSwarm)
-    ymin = PTdata[:,1].min()
-        
-    ySinker[step] = ymin
-    tSinker[step] = time
-        
-    ### save loop
-    if step % 5 == 0:
-        if uw.mpi.rank==0:
-            print(f'\n\nSave data: \n\n')
-        ### update fields first
-        updateFields(time = time)
-        ### save mesh variables
-        saveData(step=step, outputPath=outputPath, time = time)
-        
-    ### print some stuff    
-    if uw.mpi.rank==0:
-        print(f"\n\nStep: {str(step).rjust(3)}, time: {dim(time, u.megayear).m:6.2f} Myr, tracer:  {dim(ymin, u.kilometer).m:6.2f} km \n\n")
-        
-    
-    ### solve stokes 
-    stokes.solve(zero_init_guess=False)
-    ### estimate dt
-    dt = stokes.estimate_dt()
 
 
-    ### advect the swarm
-    swarm.advection(stokes.u.sym, dt, corrector=False)
-    
-    passiveSwarm.advection(stokes.u.sym, dt, corrector=False)
-    
-    
-        
-    step+=1
-    time+=dt
-    
-    # print('finished solver loop')
+mat_viscosity = np.array([BG_visc, viscBrick])
+
+viscosityMat = mat_viscosity[0] * material.sym[0] + \
+               mat_viscosity[1] * material.sym[1] 
+
+### add in material-based viscosity
+
+viscosity = sympy.Max(sympy.Min(viscosityMat, maxVisc ), minVisc )
+
+stokes.constitutive_model.Parameters.viscosity = viscosity
+stokes.saddle_preconditioner = 1.0 / viscosity
+
+stokes.penalty = 0.1
+
+stokes.solve(zero_init_guess=False)
+dt = stokes.estimate_dt()
 
 # %% [markdown]
 # #### Check the results against the benchmark 
-
-# %%
-### remove nan values, if any. Convert to km and Myr
-ySinker = dim(ySinker[~np.isnan(ySinker)], u.kilometer)
-tSinker = dim(tSinker[~np.isnan(tSinker)], u.megayear)
-
-if uw.mpi.rank==0:
-    print('Initial position: t = {0:.3f}, y = {1:.3f}'.format(tSinker[0], ySinker[0]))
-    print('Final position:   t = {0:.3f}, y = {1:.3f}'.format(tSinker[-1], ySinker[-1]))
-
-
-    UWvelocity = ((ySinker[0] - ySinker[-1]) / (tSinker[-1] - tSinker[0])).to(u.meter/u.second).m
-    print(f'Velocity:         v = {UWvelocity} m/s')
-
-    
-if uw.mpi.size==1 and render == True:
-        
-    import matplotlib.pyplot as plt
-
-    fig = plt.figure()
-    fig.set_size_inches(12, 6)
-    ax = fig.add_subplot(1,1,1)
-    ax.plot(tSinker.m, ySinker.m) 
-    ax.set_xlabel('Time [Myr]')
-    ax.set_ylabel('Sinker position [km]')
-
-# %%
-if uw.mpi.size==1 and render == True:
-    plot_mat()
 
 # %%
 if uw.mpi.size==1 and render == True:
@@ -741,7 +681,7 @@ if uw.mpi.size==1 and render == True:
 if uw.mpi.size==1 and render == True:
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
 
     pl.add_mesh(
         pvmesh,
@@ -758,14 +698,19 @@ if uw.mpi.size==1 and render == True:
     # pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="edot",
     #                     use_transparency=False, opacity=0.1, log_scale=True)
 
-    # pl.add_points(
-    #     point_cloud,
-    #     cmap="coolwarm",
-    #     render_points_as_spheres=False,
-    #     point_size=10,
-    #     opacity=0.3,
-    # )
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        scalars="edot",
+        render_points_as_spheres=False,
+        point_size=10,
+        opacity=0.3,
+        log_scale=True
+    )
 
     pl.show(cpos="xy")
+
+# %%
+point_cloud.point_data["edot"]
 
 # %%
