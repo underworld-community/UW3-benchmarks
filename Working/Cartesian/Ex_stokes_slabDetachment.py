@@ -118,13 +118,24 @@ xmin, xmax = 0., ndim(1000*u.kilometer)
 ymin, ymax = 0., ndim(660*u.kilometer)
 
 # %%
-resx = 100
-resy =  66
+if uw.mpi.size <= 2:
+    ### run low res in serial locally
+    resx = 50
+    resy = 33
+elif uw.mpi.size <= 16:
+    ### run low res in parallel 
+    resx = 100
+    resy =  66
+else:
+    ### run high res in parallel on HPC
+    resx = 250
+    resy = 165
 
 if uw.mpi.rank == 0:
     print(f'')
-    print(f'resx: {resx}, resy: {resy}')
-    print(f'No. of procs: {uw.mpi.size}')
+    print(f'resx: {resx}')
+    print(f'resy: {resy}')
+    print(f'proc: {uw.mpi.size}')
     print(f'')
 
 # %% [markdown]
@@ -189,7 +200,7 @@ for i in [material, materialVariable]:
 
 
 # %% [markdown]
-# #### Additional files to save
+# ##### Additional mesh vars to save
 
 # %%
 nodal_strain_rate_inv2 = uw.systems.Projection(mesh, strain_rate_inv2)
@@ -214,7 +225,7 @@ matProj.smoothing = 0.
 matProj.petsc_options.delValue("ksp_monitor")
 
 
-# %%
+### create function to update fields
 def updateFields(time):
     
     with mesh.access(timeField):
@@ -232,6 +243,68 @@ def updateFields(time):
 
     nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
     nodal_tau_inv2.solve(_force_setup=True)
+
+
+# %% [markdown]
+# ##### Create fig function to visualise mat
+
+# %%
+def plot_mat():
+
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = 'white'
+    pv.global_theme.window_size = [750, 750]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = 'panel'
+    pv.global_theme.smooth_shading = True
+
+
+    mesh.vtk("tempMsh.vtk")
+    pvmesh = pv.read("tempMsh.vtk") 
+
+    with swarm.access():
+        points = np.zeros((swarm.data.shape[0],3))
+        points[:,0] = swarm.data[:,0]
+        points[:,1] = swarm.data[:,1]
+        points[:,2] = 0.0
+
+    point_cloud = pv.PolyData(points)
+    
+    ### create point cloud for passive tracers
+    with passiveSwarm.access():
+        passiveCloud = pv.PolyData(np.vstack((passiveSwarm.data[:,0],passiveSwarm.data[:,1], np.zeros(len(passiveSwarm.data)))).T)
+
+
+    with swarm.access():
+        point_cloud.point_data["M"] = material.data.copy()
+        
+
+
+
+    pl = pv.Plotter(notebook=True)
+
+    pl.add_mesh(pvmesh,'Black', 'wireframe')
+
+    # pl.add_points(point_cloud, color="Black",
+    #                   render_points_as_spheres=False,
+    #                   point_size=2.5, opacity=0.75)       
+
+
+
+    pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="M",
+                        use_transparency=False, opacity=0.95)
+    
+    ### add points of passive tracers
+    pl.add_mesh(passiveCloud, color='black', show_edges=True,
+                    use_transparency=False, opacity=0.95)
+
+
+
+    pl.show(cpos="xy")
+
 
 # %% [markdown]
 # #### Boundary conditions
@@ -271,13 +344,25 @@ passiveSwarm = uw.swarm.Swarm(mesh)
 
 passiveSwarm.add_particles_with_coordinates(tracers)
 
+# %% [markdown]
+# #### Visualise swarm and passive tracers
 
 # %%
+if render == True & uw.mpi.size==1:
+    plot_mat()
+
+
+# %%
+#### Create HPC-safe function to get swarm coords across all CPU's or only on root
 def globalPassiveSwarmCoords(swarm, bcast=True, rootProc=0):
     '''
     Distribute passive swarm coordinate data to all CPUs (bcast = True) or the rootProc, (bcast = False)
     
     Used for the analysis of coordinates of swarm that may move between processors
+    
+    swarm: swarm to gather coords
+    bcast: whether to broadcast swarm coords to all processors
+    rootProc: processor to gather coords to
     
     '''
     
@@ -384,79 +469,19 @@ density = mat_density[0] * material.sym[0] + \
 
 stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density])
 
-
 # %% [markdown]
 # ### Create figure function
-
-# %%
-def plot_mat():
-
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
-    pv.global_theme.smooth_shading = True
-
-
-    mesh.vtk("tempMsh.vtk")
-    pvmesh = pv.read("tempMsh.vtk") 
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0],3))
-        points[:,0] = swarm.data[:,0]
-        points[:,1] = swarm.data[:,1]
-        points[:,2] = 0.0
-
-    point_cloud = pv.PolyData(points)
-    
-    ### create point cloud for passive tracers
-    with passiveSwarm.access():
-        passiveCloud = pv.PolyData(np.vstack((passiveSwarm.data[:,0],passiveSwarm.data[:,1], np.zeros(len(passiveSwarm.data)))).T)
-
-
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
-        
-
-
-
-    pl = pv.Plotter(notebook=True)
-
-    pl.add_mesh(pvmesh,'Black', 'wireframe')
-
-    # pl.add_points(point_cloud, color="Black",
-    #                   render_points_as_spheres=False,
-    #                   point_size=2.5, opacity=0.75)       
-
-
-
-    pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="M",
-                        use_transparency=False, opacity=0.95)
-    
-    ### add points of passive tracers
-    pl.add_mesh(passiveCloud, color='black', show_edges=True,
-                    use_transparency=False, opacity=0.95)
-
-
-
-    pl.show(cpos="xy")
-    
-if render == True & uw.mpi.size==1:
-    plot_mat()
 
 # %%
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
 
 stokes.tolerance = 1.0e-4
-### snes_atol has to be >= to viscosity contrast
-stokes.petsc_options["snes_atol"] = 1e-4
 
-stokes.petsc_options["ksp_atol"] = 1e-4
+### snes_atol and ksp_atol has to be >= to viscosity contrast
+stokes.petsc_options["snes_atol"] = 1e-6
+
+stokes.petsc_options["ksp_atol"] = 1e-6
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
 # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
@@ -500,6 +525,9 @@ stokes.solve(zero_init_guess=True)
 
 # %% [markdown]
 # #### Another linear solve
+#
+# - This solve speeds up the first NL solve, but also produces a longer first initial timestep.
+# - Probably best to leave it out as it does not fully capture the NL velocity initially
 
 # %%
 ### linear solve
