@@ -6,6 +6,6 @@
 *.h5
 *.msh
 ### ignore certain dirs
-*output*
-*ipynb_checkpoints*
 
+*ipynb_checkpoints*
+Working/Cartesian/*/*
