@@ -32,8 +32,6 @@ if uw.mpi.size == 1:
 else:
     render = False
     
-render = False
-    
     
 ### linear or nonlinear version
 linear = False ### False for NL version
@@ -73,21 +71,30 @@ dim  = uw.scaling.dimensionalise
 
 # %%
 ### set reference values
-refLength    = 1000e3
-refDensity   = 3.3e3
-refGravity   = 9.81
-refVelocity  = (1*u.centimeter/u.year).to(u.meter/u.second).m ### 1 cm/yr in m/s
-refViscosity = 1e21
+refLength    = 660e3 * u.meter
+refDensity   = 3.3e3 * u.kilogram / u.metre**3
+refGravity   = 9.81 * u.meter / u.second**2
+
+### for velocity-driven systems
+# refVelocity  = 10.0*u.centimeter/u.year ### 1 cm/yr in m/s
+# refTime      = refLength / refVelocity
+
+### for density-driven systems
+refViscosity = 1e21 * u.pascal*u.second
 refPressure  = refDensity * refGravity * refLength
 refTime      = refViscosity / refPressure
 
-bodyforce    = refDensity  * u.kilogram / u.metre**3 * refGravity * u.meter / u.second**2
+
+
+bodyforce    = refDensity * refGravity
 
 # %%
 ### create unit registry
-KL = refLength * u.meter
-Kt = refTime   * u.second
+KL = refLength 
+Kt = refTime
 KM = bodyforce * KL**2 * Kt**2
+
+
 
 scaling_coefficients                    = uw.scaling.get_coefficients()
 scaling_coefficients["[length]"] = KL
@@ -96,31 +103,7 @@ scaling_coefficients["[mass]"]= KM
 scaling_coefficients
 
 # %%
-### fundamental values
-ref_length    = uw.scaling.dimensionalise(1., u.meter).magnitude
-
-ref_length_km = uw.scaling.dimensionalise(1., u.kilometer).magnitude
-
-ref_density   =  uw.scaling.dimensionalise(1., u.kilogram/u.meter**3).magnitude
-
-ref_gravity   = uw.scaling.dimensionalise(1., u.meter/u.second**2).magnitude
-
-ref_velocity  = uw.scaling.dimensionalise(1., u.meter/u.second).magnitude
-
-### derived values
-ref_time      = ref_length / ref_velocity
-
-ref_time_Myr = dim(1, u.megayear).m
-
-ref_pressure  = ref_density * ref_gravity * ref_length
-
-ref_stress    = ref_pressure
-
-ref_viscosity = ref_pressure * ref_time
-
-### Key ND values
-# ND_gravity     = 9.81    / ref_gravity
-ND_gravity = nd(refGravity * u.meter / u.second**2)
+ND_gravity = nd( 9.81 * u.meter / u.second**2 )
 
 # %%
 ### add material index
@@ -135,8 +118,14 @@ xmin, xmax = 0., ndim(1000*u.kilometer)
 ymin, ymax = 0., ndim(660*u.kilometer)
 
 # %%
-resx = 50
-resy = 33
+resx = 100
+resy =  66
+
+if uw.mpi.rank == 0:
+    print(f'')
+    print(f'resx: {resx}, resy: {resy}')
+    print(f'No. of procs: {uw.mpi.size}')
+    print(f'')
 
 # %% [markdown]
 # ### Create mesh
@@ -464,10 +453,10 @@ if render == True & uw.mpi.size==1:
 stokes.petsc_options["ksp_monitor"] = None
 
 stokes.tolerance = 1.0e-4
-### snes_atol has to be == to viscosity contrast
-stokes.petsc_options["snes_atol"] = 1e-6
+### snes_atol has to be >= to viscosity contrast
+stokes.petsc_options["snes_atol"] = 1e-4
 
-stokes.petsc_options["ksp_atol"] = 1e-2
+stokes.petsc_options["ksp_atol"] = 1e-4
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
 # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
@@ -513,17 +502,17 @@ stokes.solve(zero_init_guess=True)
 # #### Another linear solve
 
 # %%
-# ### linear solve
+### linear solve
 
-# mat_viscosity = np.array([nd(1e21*u.pascal*u.second), nd(1e24*u.pascal*u.second)])
+mat_viscosity = np.array([nd(1e21*u.pascal*u.second), nd(1e24*u.pascal*u.second)])
 
-# viscosityMat = mat_viscosity[0] * material.sym[0] + \
-#                mat_viscosity[1] * material.sym[1] 
+viscosityMat = mat_viscosity[0] * material.sym[0] + \
+               mat_viscosity[1] * material.sym[1] 
 
 
-# stokes.constitutive_model.Parameters.viscosity = viscosityMat
-# stokes.saddle_preconditioner = 1.0 / viscosityMat
-# stokes.solve(zero_init_guess=True)
+stokes.constitutive_model.Parameters.viscosity = viscosityMat
+stokes.saddle_preconditioner = 1.0 / viscosityMat
+stokes.solve(zero_init_guess=False)
 
 # %% [markdown]
 # #### Introduce NL viscosity
@@ -767,5 +756,3 @@ if uw.mpi.size==1 and render == True:
     # )
 
     pl.show(cpos="xy")
-
-# %%
