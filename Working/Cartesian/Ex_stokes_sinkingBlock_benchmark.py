@@ -8,6 +8,8 @@
 # - Only value to change is: **viscBlock**
 #
 # - utilises the UW scaling module to convert from dimensional to non-dimensional values
+#
+# - [ASPECT benchmark](https://aspect-documentation.readthedocs.io/en/latest/user/benchmarks/benchmarks/sinking_block/doc/sinking_block.html)
 
 # %%
 from petsc4py import PETSc

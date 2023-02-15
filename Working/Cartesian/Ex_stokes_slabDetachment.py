@@ -2,6 +2,7 @@
 # # The slab detachment benchmark
 #
 # Slab detachment benchark, as outlined  [Schmalholz, 2011](https://www.sciencedirect.com/science/article/pii/S0012821X11000252?casa_token=QzaaLiBMuiEAAAAA:wnpjH88ua6bj73EAjkoqmtiY5NWi9SmH7GSjvwvY_LNJi4CLk6vptoN93xM1kyAwdWa2rnbxa-U) and [Glerum et al., 2018](https://se.copernicus.org/articles/9/267/2018/se-9-267-2018.pdf)
+# - [ASPECT benchmark](https://aspect-documentation.readthedocs.io/en/latest/user/benchmarks/benchmarks/slab_detachment/doc/slab_detachment.html)
 
 # %%
 from petsc4py import PETSc
@@ -71,7 +72,7 @@ dim  = uw.scaling.dimensionalise
 
 # %%
 ### set reference values
-refLength    = 660e3 * u.meter
+refLength    = 1000e3 * u.meter
 refDensity   = 3.3e3 * u.kilogram / u.metre**3
 refGravity   = 9.81 * u.meter / u.second**2
 
@@ -119,7 +120,7 @@ ymin, ymax = 0., ndim(660*u.kilometer)
 
 # %%
 if uw.mpi.size <= 2:
-    ### run low res in serial locally
+    ### run low res locally
     resx = 50
     resy = 33
 elif uw.mpi.size <= 16:
@@ -184,7 +185,7 @@ swarm     = uw.swarm.Swarm(mesh=mesh)
 # material  = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=False, proxy_degree=0)
 material  = uw.swarm.IndexSwarmVariable("material", swarm, indices=2)
 
-materialVariable      = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.IntType)
+materialVariable      = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.RealType)
 
 swarm.populate(fill_param=swarmGPC)
 
@@ -354,7 +355,7 @@ if render == True & uw.mpi.size==1:
 
 # %%
 #### Create HPC-safe function to get swarm coords across all CPU's or only on root
-def globalPassiveSwarmCoords(swarm, bcast=True, rootProc=0):
+def globalPassiveSwarmCoords(swarm, rootProc=0):
     '''
     Distribute passive swarm coordinate data to all CPUs (bcast = True) or the rootProc, (bcast = False)
     
@@ -431,24 +432,16 @@ def globalPassiveSwarmCoords(swarm, bcast=True, rootProc=0):
         
         return Coords
     
-    if bcast == True:
-        #### make swarm coords available on all processors
-        x_global = comm.bcast(x_global, root=rootProc)
-        y_global = comm.bcast(y_global, root=rootProc)
-        z_global = comm.bcast(z_global, root=rootProc)
-        
-        comm.barrier()
-        
-        Coords = sortCoords()
-        
-        comm.barrier()
-           
-    else:
-        ### swarm coords only available on root processor
-        if rank == rootProc:
-            Coords = sortCoords()
-            
-        comm.barrier()
+    #### make swarm coords available on all processors
+    x_global = comm.bcast(x_global, root=rootProc)
+    y_global = comm.bcast(y_global, root=rootProc)
+    z_global = comm.bcast(z_global, root=rootProc)
+
+    comm.barrier()
+
+    Coords = sortCoords()
+
+    comm.barrier()
             
     return Coords
 

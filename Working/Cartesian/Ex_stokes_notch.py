@@ -1,5 +1,5 @@
 # %% [markdown]
-# # The slab detachment benchmark
+# # The notch benchmark
 #
 # Slab detachment benchark, as outlined  [Schmalholz, 2011](https://www.sciencedirect.com/science/article/pii/S0012821X11000252?casa_token=QzaaLiBMuiEAAAAA:wnpjH88ua6bj73EAjkoqmtiY5NWi9SmH7GSjvwvY_LNJi4CLk6vptoN93xM1kyAwdWa2rnbxa-U) and [Glerum et al., 2018](https://se.copernicus.org/articles/9/267/2018/se-9-267-2018.pdf)
 
@@ -12,8 +12,6 @@ import sympy
 from mpi4py import MPI
 
 import os
-
-from underworld3.utilities import generateXdmf
 
 # %%
 options = PETSc.Options()
@@ -42,7 +40,7 @@ linear = False ### False for NL version
 swarmGPC = 2
 
 # %%
-outputPath = './output/notchBenchmark/'
+outputPath = './output/swarmTest/'
 
 
 if uw.mpi.rank == 0:
@@ -68,11 +66,11 @@ dim  = uw.scaling.dimensionalise
 
 # %%
 ### set reference values
-refLength    = 100e3
+refLength    = 10e3
 refDensity   = 2.7e3
 refGravity   = 9.81
 refVelocity  = (1*u.centimeter/u.year).to(u.meter/u.second).m ### 1 cm/yr in m/s
-refViscosity = 1e22
+refViscosity = 1e20
 refPressure  = refDensity * refGravity * refLength
 refTime      = refViscosity / refPressure
 
@@ -90,34 +88,8 @@ scaling_coefficients["[mass]"]= KM
 scaling_coefficients
 
 # %%
-
-# %%
-### fundamental values
-ref_length    = uw.scaling.dimensionalise(1., u.meter).magnitude
-
-ref_length_km = uw.scaling.dimensionalise(1., u.kilometer).magnitude
-
-ref_density   =  uw.scaling.dimensionalise(1., u.kilogram/u.meter**3).magnitude
-
-ref_gravity   = uw.scaling.dimensionalise(1., u.meter/u.second**2).magnitude
-
-ref_temp      = uw.scaling.dimensionalise(1., u.kelvin).magnitude
-
-ref_velocity  = uw.scaling.dimensionalise(1., u.meter/u.second).magnitude
-
-### derived values
-ref_time      = ref_length / ref_velocity
-
-ref_time_Myr = dim(1, u.megayear).m
-
-ref_pressure  = ref_density * ref_gravity * ref_length
-
-ref_stress    = ref_pressure
-
-ref_viscosity = ref_pressure * ref_time
-
 ### Key ND values
-ND_gravity     = 9.81    / ref_gravity
+ND_gravity     = nd( refGravity * u.meter / u.second**2 )
 
 # %%
 ### add material index
@@ -132,12 +104,12 @@ xmin, xmax = 0., ndim(40*u.kilometer)
 ymin, ymax = 0., ndim(10*u.kilometer)
 
 ## set brick height and length
-BrickHeight = (400. / ref_length)
-BrickLength = (800. / ref_length)
+BrickHeight = nd(400.*u.meter)
+BrickLength = nd(800.*u.meter)
 
 # %%
-resx = 40
-resy = 10
+resx = 60
+resy = 15
 
 # %%
 vel = ndim(2e-11 * u.meter / u.second)
@@ -189,6 +161,7 @@ swarm     = uw.swarm.Swarm(mesh=mesh)
 material  = uw.swarm.IndexSwarmVariable("material", swarm, indices=2)
 
 materialVariable      = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.IntType)
+
 
 swarm.populate(fill_param=swarmGPC)
 
@@ -257,110 +230,13 @@ stokes.add_dirichlet_bc(sympy.Matrix([-1*vel,0.]), "Right", [0,1])
 
 stokes.add_dirichlet_bc(0.0, "Bottom", 1)
 
-
-# %%
-def globalPassiveSwarmCoords(swarm, bcast=True, rootProc=0):
-    '''
-    Distribute passive swarm coordinate data to all CPUs (bcast = True) or the rootProc, (bcast = False)
-    
-    Used for the analysis of coordinates of swarm that may move between processors
-    
-    '''
-    
-    comm = uw.mpi.comm
-    rank = uw.mpi.rank
-    size = uw.mpi.size
-    
-
-    with swarm.access():
-        if len(swarm.data) > 0:
-            x_local = np.ascontiguousarray(swarm.data[:,0].copy())
-            y_local = np.ascontiguousarray(swarm.data[:,1].copy())
-            if swarm.data.shape[1] == 3:
-                z_local = np.ascontiguousarray(swarm.data[:,2].copy())
-            else:
-                z_local = np.zeros_like(swarm.data[:,0])*np.nan
-                
-        else:
-            x_local = np.array([np.nan], dtype='float64')
-            y_local = np.array([np.nan], dtype='float64')
-            z_local = np.array([np.nan], dtype='float64')
-            
-            
-            
-    ### Collect local array sizes using the high-level mpi4py gather
-    sendcounts = np.array(comm.gather(len(x_local), root=rootProc))
-    
-    
-    if rank == rootProc:
-        x_global = np.zeros((sum(sendcounts)), dtype='float64')
-        y_global = np.zeros((sum(sendcounts)), dtype='float64')
-        z_global = np.zeros((sum(sendcounts)), dtype='float64')
-    else:
-        x_global = None
-        y_global = None
-        z_global = None
-        
-
-    comm.barrier()
-
-    ## gather x values, can't do them together
-    comm.Gatherv(sendbuf=x_local, recvbuf=(x_global, sendcounts), root=rootProc)
-    ## gather y values
-    comm.Gatherv(sendbuf=y_local, recvbuf=(y_global, sendcounts), root=rootProc)
-
-    ## gather z values
-    comm.Gatherv(sendbuf=z_local, recvbuf=(z_global, sendcounts), root=rootProc)
-    
-    comm.barrier()
-    
-    def sortCoords():
-        ## Put back into combined array
-        Coords = np.zeros(shape=(len(x_global),3))*np.nan
-        Coords[:,0] = x_global
-        Coords[:,1] = y_global
-        Coords[:,2] = z_global
-        
-        comm.barrier()
-
-        ### remove rows with NaN
-        Coords = Coords[~np.isnan(Coords[:,0])]
-        ### remove cols with NaN
-        Coords = Coords[:, ~np.isnan(Coords).all(axis=0)]
-        
-        comm.barrier()
-        
-        return Coords
-    
-    if bcast == True:
-        #### make swarm coords available on all processors
-        x_global = comm.bcast(x_global, root=rootProc)
-        y_global = comm.bcast(y_global, root=rootProc)
-        z_global = comm.bcast(z_global, root=rootProc)
-        
-        comm.barrier()
-        
-        Coords = sortCoords()
-        
-        comm.barrier()
-           
-    else:
-        ### swarm coords only available on root processor
-        if rank == rootProc:
-            Coords = sortCoords()
-            
-        comm.barrier()
-            
-    return Coords
-
-
 # %% [markdown]
 # #### Set up density of materials
 
 # %%
 ### set density of materials
-densityBG      = 2700/ref_density
-densityBrick   = 2700/ref_density
+densityBG      = nd(2700 * u.kilogram / u.metre**3 )
+densityBrick   = nd(2700 * u.kilogram / u.metre**3 )
 
 # %%
 mat_density = np.array([densityBG, densityBrick])
@@ -434,34 +310,8 @@ def plot_mat():
 if render == True & uw.mpi.size==1:
     plot_mat()
 
-
 # %% [markdown]
 # #### Create function to save mesh and swarm vars
-
-# %%
-def saveData(step, outputPath, time):
-    
-    ### save mesh vars
-    fname = f"{outputPath}mesh_{'step_'}{step:02d}.h5"
-    xfname = f"{outputPath}mesh_{'step_'}{step:02d}.xmf"
-    viewer = PETSc.ViewerHDF5().createHDF5(fname, mode=PETSc.Viewer.Mode.WRITE,  comm=PETSc.COMM_WORLD)
-
-    viewer(mesh.dm)
-
-    ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
-    viewer(stokes.u._gvec)         # add velocity
-    viewer(stokes.p._gvec)         # add pressure
-    viewer(strain_rate_inv2._gvec) # add strain rate
-    viewer(node_viscosity._gvec)   # add viscosity
-    viewer(materialField._gvec)    # add material projection
-    viewer(timeField._gvec)        # add time
-    viewer.destroy()              
-    generateXdmf(fname, xfname)
-    
-    ### save all swarm variables attached to DM
-    x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
-    swarm.dm.viewXDMF(x_swarm_fname)
-
 
 # %%
 # Set solve options here (or remove default values
@@ -469,9 +319,9 @@ stokes.petsc_options["ksp_monitor"] = None
 
 stokes.tolerance = 1.0e-4
 ### snes_atol has to be =< 1e-3 (dependent on res) otherwise it will not solve
-stokes.petsc_options["snes_atol"] = 1e-4
+stokes.petsc_options["snes_atol"] = 1e-6
 
-stokes.petsc_options["ksp_atol"] = 1e-2
+stokes.petsc_options["ksp_atol"] = 1e-6
 
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
 # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
@@ -514,7 +364,7 @@ maxVisc = nd(1e24 *u.pascal*u.second)
 # %%
 ### linear solve
 stokes.constitutive_model.Parameters.viscosity = minVisc
-stokes.saddle_preconditioner = 1.0 / ndim(ref_viscosity * u.pascal*u.second)
+stokes.saddle_preconditioner = 1.0 / minVisc
 
 
 # %%
@@ -544,46 +394,43 @@ stokes.solve(zero_init_guess=False)
 # %% [markdown]
 # #### Solve for NL BG material
 
+# %% [markdown]
+# ###### This is a NL viscosity
+
 # %%
-### Set the viscosity of the brick
-viscBrick        = nd(1e20 *u.pascal*u.second)
+# ### Set the viscosity of the brick
+# viscBrick        = nd(1e20 *u.pascal*u.second)
 
-if linear == False: 
-    n = 4
-    BG_visc       = nd(4.75e11*u.pascal*u.second**(1/n))
-    BG_visc       = BG_visc * sympy.Pow(stokes._Einv2, (1/n-1))
+# if linear == False: 
+#     n = 4
+#     BG_visc       = nd(4.75e11*u.pascal*u.second**(1/n))
+#     BG_visc       = BG_visc * sympy.Pow(stokes._Einv2, (1/n-1))
 
 
-else:
-    BG_visc      = nd(2e23*u.pascal*u.second) #4.75*1e11/ref_viscosity
-    BG_visc       = BG_visc * (stokes._Einv2)
-
-# C = nd(40e6*u.pascal)
-
-# if linear == False:
-#     BG_visc = C / (2*stokes._Einv2)
-    
 # else:
-#     BG_visc = C / (2*nd(1e-15/u.second))
+#     BG_visc      = nd(2e23*u.pascal*u.second)
 
+    
 
+# mat_viscosity = np.array([BG_visc, viscBrick])
 
-mat_viscosity = np.array([BG_visc, viscBrick])
+# viscosityMat = mat_viscosity[0] * material.sym[0] + \
+#                mat_viscosity[1] * material.sym[1] 
 
-viscosityMat = mat_viscosity[0] * material.sym[0] + \
-               mat_viscosity[1] * material.sym[1] 
+# ### add in material-based viscosity
 
-### add in material-based viscosity
+# viscosity = sympy.Max(sympy.Min(viscosityMat, maxVisc ), minVisc )
 
-viscosity = sympy.Max(sympy.Min(viscosityMat, maxVisc ), minVisc )
+# stokes.constitutive_model.Parameters.viscosity = viscosity
+# stokes.saddle_preconditioner = 1.0 / viscosity
 
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.saddle_preconditioner = 1.0 / viscosity
+# stokes.penalty = 0.1
 
-stokes.penalty = 0.1
+# stokes.solve(zero_init_guess=False)
+# dt = stokes.estimate_dt()
 
-stokes.solve(zero_init_guess=False)
-dt = stokes.estimate_dt()
+# %% [markdown]
+# ###### This is a NL visco-platic material
 
 # %%
 ### Set the viscosity of the brick
@@ -621,6 +468,8 @@ dt = stokes.estimate_dt()
 # #### Check the results against the benchmark 
 
 # %%
+updateFields(0)
+
 if uw.mpi.size==1 and render == True:
     import numpy as np
     import pyvista as pv
@@ -681,19 +530,19 @@ if uw.mpi.size==1 and render == True:
 if uw.mpi.size==1 and render == True:
     pl = pv.Plotter()
 
-    # pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=1., opacity=0.75)
 
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        scalars="edot",
-        edge_color="Grey",
-        show_edges=True,
-        use_transparency=False,
-        log_scale=True,
-        # clim=[0.1,2.1],
-        opacity=1.0,
-    )
+    # pl.add_mesh(
+    #     pvmesh,
+    #     cmap="coolwarm",
+    #     scalars="edot",
+    #     edge_color="Grey",
+    #     show_edges=True,
+    #     use_transparency=False,
+    #     log_scale=True,
+    #     # clim=[0.1,2.1],
+    #     opacity=1.0,
+    # )
     
     # pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="edot",
     #                     use_transparency=False, opacity=0.1, log_scale=True)
@@ -709,8 +558,3 @@ if uw.mpi.size==1 and render == True:
     )
 
     pl.show(cpos="xy")
-
-# %%
-point_cloud.point_data["edot"]
-
-# %%
