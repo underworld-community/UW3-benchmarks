@@ -119,7 +119,7 @@ xmin, xmax = 0., ndim(1000*u.kilometer)
 ymin, ymax = 0., ndim(660*u.kilometer)
 
 # %%
-if uw.mpi.size <= 2:
+if uw.mpi.size <= 4:
     ### run low res locally
     resx = 50
     resy = 33

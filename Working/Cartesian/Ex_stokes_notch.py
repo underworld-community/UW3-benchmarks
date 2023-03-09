@@ -34,6 +34,21 @@ else:
 ### linear or nonlinear version
 linear = False ### False for NL version
 
+# %%
+### set pyvista options
+if render == True & uw.mpi.size==1:
+    if uw.mpi.size==1 and render == True:
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [1050, 500]
+    pv.global_theme.antialiasing = 'ssaa'
+    pv.global_theme.jupyter_backend = "trame"
+    pv.global_theme.smooth_shading = True
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
 # %%
 ## swarm gauss point count (particle distribution)
@@ -253,17 +268,6 @@ stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density])
 # %%
 def plot_mat():
 
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
-    pv.global_theme.smooth_shading = True
-
-
     mesh.vtk("tempMsh.vtk")
     pvmesh = pv.read("tempMsh.vtk") 
 
@@ -308,6 +312,7 @@ def plot_mat():
     pl.show(cpos="xy")
     
 if render == True & uw.mpi.size==1:
+    
     plot_mat()
 
 # %% [markdown]
@@ -470,18 +475,7 @@ dt = stokes.estimate_dt()
 # %%
 updateFields(0)
 
-if uw.mpi.size==1 and render == True:
-    import numpy as np
-    import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
     mesh.vtk("tmp_mesh.vtk")
     pvmesh = pv.read("tmp_mesh.vtk")

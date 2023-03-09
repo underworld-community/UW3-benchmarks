@@ -76,6 +76,17 @@ refTime      = refViscosity / refPressure
 
 bodyforce    = refDensity  * u.kilogram / u.metre**3 * refGravity * u.meter / u.second**2
 
+### create unit registry
+KL = refLength * u.meter
+Kt = refTime   * u.second
+KM = bodyforce * KL**2 * Kt**2
+
+scaling_coefficients                    = uw.scaling.get_coefficients()
+scaling_coefficients["[length]"] = KL
+scaling_coefficients["[time]"] = Kt
+scaling_coefficients["[mass]"]= KM
+scaling_coefficients
+
 # %%
 ### create unit registry
 KL = refLength * u.meter
