@@ -14,7 +14,7 @@ from mpi4py import MPI
 
 import os
 
-from underworld3.utilities import generateXdmf
+from underworld3.utilities import generateXdmf, swarm_h5, swarm_xdmf
 
 # %%
 options = PETSc.Options()
@@ -72,39 +72,29 @@ dim  = uw.scaling.dimensionalise
 
 # %%
 ### set reference values
-refLength    = 1000e3 * u.meter
-refDensity   = 3.3e3 * u.kilogram / u.metre**3
-refGravity   = 9.81 * u.meter / u.second**2
+velocity     = 1e-11 * u.meter / u.second
+model_height = 660.  * u.kilometer
+bodyforce    = 3300  * u.kilogram / u.metre**3 * 9.81 * u.meter / u.second**2
+mu           = 1e22  * u.pascal * u.second
 
-### for velocity-driven systems
-# refVelocity  = 10.0*u.centimeter/u.year ### 1 cm/yr in m/s
-# refTime      = refLength / refVelocity
-
-### for density-driven systems
-refViscosity = 1e21 * u.pascal*u.second
-refPressure  = refDensity * refGravity * refLength
-refTime      = refViscosity / refPressure
+KL = model_height
+Kt = KL / velocity
+# KM = bodyforce * KL**2 * Kt**2
+KM = mu * KL * Kt
 
 
+scaling_coefficients  = uw.scaling.get_coefficients()
 
-bodyforce    = refDensity * refGravity
-
-# %%
-### create unit registry
-KL = refLength 
-Kt = refTime
-KM = bodyforce * KL**2 * Kt**2
-
-
-
-scaling_coefficients                    = uw.scaling.get_coefficients()
 scaling_coefficients["[length]"] = KL
 scaling_coefficients["[time]"] = Kt
 scaling_coefficients["[mass]"]= KM
+
 scaling_coefficients
 
 # %%
 ND_gravity = nd( 9.81 * u.meter / u.second**2 )
+
+ND_gravity * nd(3.3e3 * u.kilogram / u.metre**3)
 
 # %%
 ### add material index
@@ -469,41 +459,12 @@ stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density])
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
 
-stokes.tolerance = 1.0e-4
+# stokes.tolerance = 1.0e-6
 
 ### snes_atol and ksp_atol has to be >= to viscosity contrast
 stokes.petsc_options["snes_atol"] = 1e-6
 
 stokes.petsc_options["ksp_atol"] = 1e-6
-
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
-# stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_type"
-] = "gamg"  # can use gasm / gamg / lu here
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_gasm_type"
-] = "basic"  # can use gasm / gamg / lu here
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_gamg_type"
-] = "classical"  # can use gasm / gamg / lu here
-stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
-# # stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 5
-# # stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-# # stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_converged_maxits"] = None
-
-
-# # Fast: preonly plus gasm / gamg / mumps
-# # Robust: gmres plus gasm / gamg / mumps
-
-# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
-# # stokes.petsc_options["fieldsplit_velocity_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here
-
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
-# stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
-stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
 
 
 # %% [markdown]
@@ -566,14 +527,12 @@ viscosityMat = mat_viscosity[0] * material.sym[0] + \
 # ##### Viscosity is limited betweeen 10$^{21}$ and 10$^{25}$ Pa S
 
 # %%
-### add in material-based viscosity
+# ### add in material-based viscosity
 
 viscosity = sympy.Max(sympy.Min(viscosityMat, nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
 
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
-
-stokes.penalty = 0.1
 
 
 # %% [markdown]
@@ -601,8 +560,18 @@ def saveData(step, outputPath, time):
     generateXdmf(fname, xfname)
     
     ### save all swarm variables attached to DM
-    x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
-    swarm.dm.viewXDMF(x_swarm_fname)
+    #x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
+    #swarm.dm.viewXDMF(x_swarm_fname)
+    
+    #### save the swarm and selected variables
+    swarmFields = [material, ]
+    swarm_h5(swarm=swarm, fileName='swarm', fields=swarmFields, timestep=step, outputPath=outputPath)
+    swarm_xdmf(fields=swarmFields, fileName='swarm', timestep=step, outputPath=outputPath)
+    
+    ### save passive swarm
+    PTFields = None
+    swarm_h5(swarm=passiveSwarm, fileName='PT', fields=PTFields, timestep=step, outputPath=outputPath)
+    swarm_xdmf(fields=PTFields, fileName='PT', timestep=step, outputPath=outputPath)
     
 
 
@@ -643,7 +612,7 @@ while step < nsteps:
     ### solve stokes 
     stokes.solve(zero_init_guess=False)
     ### estimate dt
-    dt = stokes.estimate_dt()
+    dt = 0.5 * stokes.estimate_dt()
 
 
     ### advect the swarm

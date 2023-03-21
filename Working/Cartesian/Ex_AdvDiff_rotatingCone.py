@@ -69,15 +69,15 @@ res = 32
 xmin, xmax = -0.5, 0.5
 ymin, ymax = -0.5, 0.5
 
-mesh = uw.meshing.StructuredQuadBox(
-    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
-)
-
-
 # +
-# mesh = uw.meshing.UnstructuredSimplexBox(
-#     minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=0.03, regular=False )
+# mesh = uw.meshing.StructuredQuadBox(
+#     elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
+# )
 # -
+
+
+mesh = uw.meshing.UnstructuredSimplexBox(
+    minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=0.03, regular=False )
 
 # default model parameters
 sigma = 0.2          # width of blob
@@ -283,7 +283,7 @@ if uw.mpi.size == 1:
         cmap="coolwarm",
         edge_color="Black",
         show_edges=True,
-        scalars="T_new",
+        scalars="dT",
         use_transparency=False,
         opacity=0.95,
     )

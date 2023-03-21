@@ -164,7 +164,7 @@ for index, coord in enumerate(meshbox.data):
 with meshbox.access(t_soln, t_0):
     t_0.data[:,0] = t_soln.data[:,0]
     
-    
+
 
 # +
 # check the mesh if in a notebook / serial
@@ -231,7 +231,7 @@ def plotFig():
 
         pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=True, point_size=10, opacity=0.33)
 
-        pl.add_mesh(pvstream, opacity=0.5)
+        # pl.add_mesh(pvstream, opacity=0.5)
         # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
         # pl.add_points(pdata)
@@ -243,7 +243,8 @@ def plotFig():
 plotFig()
 # -
 
-buoyancy_force = Ra * t_soln.sym[0]
+#### buoyancy_force = rho0 * (1 + (beta * deltaP) - (alpha * deltaT)) * gravity
+buoyancy_force = (1 * (1. - (1 * (t_soln.sym[0] - tempMin)))) * -1
 stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 
 adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 5
@@ -344,7 +345,7 @@ def plot_T_mesh(filename):
 t_step = 0
 time = 0.
 
-nsteps = 500
+nsteps = 10
 
 timeVal =  np.zeros(nsteps)*np.nan
 vrmsVal =  np.zeros(nsteps)*np.nan
@@ -370,7 +371,7 @@ while t_step < nsteps:
     tstats = t_soln.stats()
 
     if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(step, delta_t))
+        print("Timestep {}, dt {}".format(t_step, delta_t))
         
         print(f't_rms = {t_soln.stats()[6]}, v_rms = {v_rms()}')
 
