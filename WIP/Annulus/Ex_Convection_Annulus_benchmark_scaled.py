@@ -464,13 +464,6 @@ adv_diff.theta = 0.5
 adv_diff.add_dirichlet_bc(T_cmb, meshball.boundaries.Lower.name)
 adv_diff.add_dirichlet_bc(T_surf, meshball.boundaries.Upper.name)
 
-# Check the diffusion part of the solve converges
-adv_diff.petsc_options["ksp_monitor"] = None
-adv_diff.petsc_options["monitor"] = None
-
-
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
-
 
 def plotFig(var='T',arrowSize=500):    
     import numpy as np
@@ -543,6 +536,16 @@ time_dim = 0.
 # +
 # with meshball.access(v_soln):
 #     print(v_soln.data[np.where(uw.function.evaluate(surface_fn, meshball.data) == 1 )])
+
+# +
+# Check the diffusion part of the solve converges
+adv_diff.petsc_options["ksp_monitor"] = None
+adv_diff.petsc_options["monitor"] = None
+adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
+
+adv_diff.petsc_options['pc_type'] = 'lu'
+
+stokes.petsc_options['pc_type'] = 'lu'
 
 # +
 # Convection model / update in time

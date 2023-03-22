@@ -1,7 +1,7 @@
 # %% [markdown]
-# # The brick benchmark
+# # The notch benchmark
 #
-# Brick compression benchark, as outlined in [Kaus, 2010](http://jupiter.ethz.ch/~kausb/k10.pdf) and [Glerum et al., 2018](https://se.copernicus.org/articles/9/267/2018/se-9-267-2018.pdf)
+# Slab detachment benchark, as outlined  [Schmalholz, 2011](https://www.sciencedirect.com/science/article/pii/S0012821X11000252?casa_token=QzaaLiBMuiEAAAAA:wnpjH88ua6bj73EAjkoqmtiY5NWi9SmH7GSjvwvY_LNJi4CLk6vptoN93xM1kyAwdWa2rnbxa-U) and [Glerum et al., 2018](https://se.copernicus.org/articles/9/267/2018/se-9-267-2018.pdf)
 
 # %%
 from petsc4py import PETSc
@@ -37,6 +37,7 @@ linear = False ### False for NL version
 # %%
 ### set pyvista options
 if render == True & uw.mpi.size==1:
+    import numpy as np
     import pyvista as pv
     import vtk
 
@@ -78,34 +79,31 @@ nd   = uw.scaling.non_dimensionalise
 dim  = uw.scaling.dimensionalise 
 
 # %%
-velocity     = 2e-11 * u.meter / u.second
-model_height = 10. * u.kilometer
-bodyforce    = 2700 * u.kilogram / u.metre**3 * 9.81 * u.meter / u.second**2
-mu           = 1e22 * u.pascal * u.second
+### set reference values
+refLength    = 10e3
+refDensity   = 2.7e3
+refGravity   = 9.81
+refVelocity  = (1*u.centimeter/u.year).to(u.meter/u.second).m ### 1 cm/yr in m/s
 
-KL = model_height
-Kt = KL / velocity
-# KM = bodyforce * KL**2 * Kt**2
-KM = mu * KL * Kt
+refViscosity = 1e20 * u.pascal * u.second
+refTime      = refLength / refVelocity
 
+bodyforce    = refDensity  * u.kilogram / u.metre**3 * refGravity * u.meter / u.second**2
 
-scaling_coefficients  = uw.scaling.get_coefficients()
+### create unit registry
+KL = refLength * u.meter
+Kt = refTime   * u.second
+KM = refViscosity * KL * Kt #bodyforce * KL**2 * Kt**2
 
+scaling_coefficients                    = uw.scaling.get_coefficients()
 scaling_coefficients["[length]"] = KL
 scaling_coefficients["[time]"] = Kt
 scaling_coefficients["[mass]"]= KM
-
 scaling_coefficients
 
 # %%
 ### Key ND values
-ND_gravity     = nd( 9.81 * u.meter / u.second**2 )
-
-# %%
-nd(3000  * u.kilogram / u.metre**3) * ND_gravity
-
-# %%
-nd(1e20 *u.pascal *u.second )
+ND_gravity     = nd( refGravity * u.meter / u.second**2 )
 
 # %%
 ### add material index
@@ -139,13 +137,16 @@ vel = ndim(2e-11 * u.meter / u.second)
 #                                               cellSize=1.0/res, 
 #                                               regular=True)
 
-# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / resy, regular=False)
+# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=False)
 
 
 mesh = uw.meshing.StructuredQuadBox(elementRes =(int(resx),int(resy)),
                                     minCoords=(xmin,ymin), 
                                     maxCoords=(xmax,ymax))
 
+
+# %% [markdown]
+# ### Create Stokes object
 
 # %%
 v = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=2 )
@@ -159,12 +160,10 @@ node_viscosity = uw.discretisation.MeshVariable("viscosity", mesh, 1, degree=1)
 timeField      = uw.discretisation.MeshVariable("time", mesh, 1, degree=1)
 materialField  = uw.discretisation.MeshVariable("material", mesh, 1, degree=1)
 
-# %% [markdown]
-# ### Create Stokes object
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
-stokes.constitutive_model = uw.systems.constitutive_models.ViscoPlasticFlowModel(mesh.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
 
 # %% [markdown]
 # #### Setup swarm
@@ -316,29 +315,58 @@ if render == True & uw.mpi.size==1:
     plot_mat()
 
 # %% [markdown]
+# #### Create function to save mesh and swarm vars
+
+# %%
+stokes.petsc_options.view()
+
+# %%
+# Set solve options here (or remove default values
+stokes.petsc_options["ksp_monitor"] = None
+
+# stokes.tolerance = 1.0e-4
+### snes_atol has to be =< 1e-3 (dependent on res) otherwise it will not solve
+stokes.petsc_options["snes_atol"] = 1e-6
+
+stokes.petsc_options["ksp_atol"] = 1e-6 
+
+stokes.petsc_options['pc_type'] = 'lu'
+
+# stokes.petsc_options['ksp_type'] = 'cg'
+# stokes.petsc_options['pc_type'] = 'gamg'
+# stokes.petsc_options['pc_factor_mat_solver_type'] = 'mumps'
+
+ # 0 SNES Function norm 3.65288 
+ #    Residual norms for Stokes_1_ solve.
+ #    0 KSP Residual norm 1.409182197414e+03 
+ #    1 KSP Residual norm 6.526083660282e+02 
+ #    2 KSP Residual norm 1.431137596573e+02 
+ #    3 KSP Residual norm 2.801164839882e+01 
+ #    4 KSP Residual norm 3.877183541971e+00 
+ #    5 KSP Residual norm 8.238049618179e-01 
+ #    6 KSP Residual norm 1.300596853440e-01 
+ #    7 KSP Residual norm 1.345615729731e-02 
+ #    8 KSP Residual norm 3.183255005347e-03 
+ #    9 KSP Residual norm 3.685194928334e-04 
+ #   10 KSP Residual norm 6.335750955839e-05 
+ #  1 SNES Function norm 5.36971e-08 
+
+# stokes.petsc_options['snes_type'] = "nrichardson"
+
+
+
+# %% [markdown]
 # ### Initial linear solve
 # viscosity is limited between 10$^{20}$ and 10$^{24}$ Pa S
 
 # %%
 minVisc = nd(1e20 *u.pascal*u.second)
-
 maxVisc = nd(1e24 *u.pascal*u.second)
-
-
-stokes.constitutive_model.Parameters.min_viscosity = minVisc
-
-stokes.constitutive_model.Parameters.max_viscosity =  maxVisc
 
 # %%
 ### linear solve
-stokes.constitutive_model.Parameters.bg_viscosity = nd(1e22 *u.pascal*u.second)
+stokes.constitutive_model.Parameters.viscosity = minVisc
 
-
-# %%
-stokes.petsc_options["snes_atol"] = 1.0e-7
-stokes.petsc_options["ksp_atol"]  = 1.0e-7
-
-stokes.tolerance = 1.0e-7
 
 # %%
 stokes.solve(zero_init_guess=True)
@@ -347,17 +375,20 @@ stokes.solve(zero_init_guess=True)
 # #### Linear solve with different viscosities
 
 # %%
-# ### linear viscosity
+### linear viscosity
 
-# viscosityL = np.array([maxVisc, minVisc])
+viscosityL = np.array([maxVisc, minVisc])
 
-# viscosityL   = viscosityL[0] * material.sym[0] + \
-#                viscosityL[1] * material.sym[1]  
+viscosityL   = viscosityL[0] * material.sym[0] + \
+               viscosityL[1] * material.sym[1]  
 
 
-# stokes.constitutive_model.Parameters.bg_viscosity = viscosityL
+stokes.constitutive_model.Parameters.viscosity = viscosityL
 
-# stokes.solve(zero_init_guess=False)
+# stokes.saddle_preconditioner = 1 / viscosityL
+
+# stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
+stokes.solve(zero_init_guess=False)
 
 
 
@@ -365,12 +396,44 @@ stokes.solve(zero_init_guess=True)
 # #### Solve for NL BG material
 
 # %% [markdown]
+# ###### This is a NL viscosity
+
+# %%
+# ### Set the viscosity of the brick
+# viscBrick        = nd(1e20 *u.pascal*u.second)
+
+# if linear == False: 
+#     n = 4
+#     BG_visc       = nd(4.75e11*u.pascal*u.second**(1/n))
+#     BG_visc       = BG_visc * sympy.Pow(stokes._Einv2, (1/n-1))
+
+
+# else:
+#     BG_visc      = nd(2e23*u.pascal*u.second)
+
+    
+
+# mat_viscosity = np.array([BG_visc, viscBrick])
+
+# viscosityMat = mat_viscosity[0] * material.sym[0] + \
+#                mat_viscosity[1] * material.sym[1] 
+
+# ### add in material-based viscosity
+
+# viscosity = sympy.Max(sympy.Min(viscosityMat, maxVisc ), minVisc )
+
+# stokes.constitutive_model.Parameters.viscosity = viscosity
+# stokes.saddle_preconditioner = 1.0 / viscosity
+
+# stokes.penalty = 0.1
+
+# stokes.solve(zero_init_guess=False)
+# dt = stokes.estimate_dt()
+
+# %% [markdown]
 # ###### This is a NL visco-platic material
 
 # %%
-### set the SR Parameter
-stokes.constitutive_model.Parameters.edot_II_fn = stokes._Einv2
-stokes.constitutive_model.Parameters.epsilon_edot_II = 1e-15
 
 # %%
 ### Set the viscosity of the brick
@@ -378,20 +441,28 @@ viscBrick        = nd(1e20 *u.pascal*u.second)
 
 C = nd(40e6 *u.pascal)
 
-mat_viscosity_bg = np.array([maxVisc, viscBrick])
-
-viscosityMat_bg = mat_viscosity_bg[0] * material.sym[0] + \
-                  mat_viscosity_bg[1] * material.sym[1] 
-
-mat_viscosity_ys = np.array([C, 0.])
-
-viscosityMat_ys = mat_viscosity_ys[0] * material.sym[0] + \
-                  mat_viscosity_ys[1] * material.sym[1] 
+if linear == False: 
+    BG_visc = C / (2*stokes._Einv2)
+    
+else:
+    BG_visc = C / (2*nd(1e-15/u.second))
 
 
-stokes.constitutive_model.Parameters.bg_viscosity = viscosityMat_bg
 
-stokes.constitutive_model.Parameters.yield_stress = viscosityMat_ys
+
+mat_viscosity = np.array([BG_visc, viscBrick])
+
+viscosityMat = mat_viscosity[0] * material.sym[0] + \
+               mat_viscosity[1] * material.sym[1] 
+
+### add in material-based viscosity
+
+viscosity = sympy.Max(sympy.Min(viscosityMat, maxVisc ), minVisc )
+
+stokes.constitutive_model.Parameters.viscosity = viscosity
+# stokes.saddle_preconditioner = 1.0 / viscosity
+
+# stokes.penalty = 0.1
 
 stokes.solve(zero_init_guess=False)
 dt = stokes.estimate_dt()
@@ -402,7 +473,7 @@ dt = stokes.estimate_dt()
 # %%
 updateFields(0)
 
-if render == True & uw.mpi.size==1:
+if uw.mpi.size==1 and render == True:
 
     mesh.vtk("tmp_mesh.vtk")
     pvmesh = pv.read("tmp_mesh.vtk")
@@ -451,7 +522,7 @@ if render == True & uw.mpi.size==1:
 if uw.mpi.size==1 and render == True:
     pl = pv.Plotter()
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.0001, opacity=0.75)
+    # pl.add_arrows(arrow_loc, arrow_length, mag=1., opacity=0.75)
 
     # pl.add_mesh(
     #     pvmesh,
@@ -479,3 +550,5 @@ if uw.mpi.size==1 and render == True:
     )
 
     pl.show(cpos="xy")
+
+# %%
