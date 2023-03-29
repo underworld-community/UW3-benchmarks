@@ -138,12 +138,12 @@ if uw.mpi.rank == 0:
 #                                               cellSize=1.0/res, 
 #                                               regular=True)
 
-# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / res, regular=False)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / resy, regular=False)
 
 
-mesh = uw.meshing.StructuredQuadBox(elementRes =(int(resx),int(resy)),
-                                    minCoords=(xmin,ymin), 
-                                    maxCoords=(xmax,ymax))
+# mesh = uw.meshing.StructuredQuadBox(elementRes =(int(resx),int(resy)),
+#                                     minCoords=(xmin,ymin), 
+#                                     maxCoords=(xmax,ymax))
 
 
 # %% [markdown]
@@ -177,7 +177,7 @@ material  = uw.swarm.IndexSwarmVariable("material", swarm, indices=2)
 
 materialVariable      = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.RealType)
 
-swarm.populate(fill_param=swarmGPC)
+swarm.populate(fill_param=2)
 
 # %%
 for i in [material, materialVariable]:
@@ -189,6 +189,56 @@ for i in [material, materialVariable]:
                    (swarm.data[:,0] >= ndim((500-40)*u.kilometer)) &
                    (swarm.data[:,0] <= ndim((500+40)*u.kilometer))] = SlabIndex
 
+
+# %%
+# check the mesh if in a notebook / serial
+
+if uw.mpi.size == 1:
+
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [750, 750]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
+
+    # pv.start_xvfb()
+
+    mesh.vtk("ignore_meshball.vtk")
+    pvmesh = pv.read("ignore_meshball.vtk")
+
+    # with mesh1.access():
+        # usol = stokes.u.data.copy()
+
+    # pvmesh.point_data["T"] = uw.function.evaluate(T_soln.sym[0], meshball.data)
+
+    pl = pv.Plotter(window_size=(750, 750))
+
+    pl.add_mesh(pvmesh,'Black', 'wireframe')
+
+    # pl.add_mesh(
+    #     pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
+    # )
+
+    with swarm.access('M'):
+        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
+        points[:, 0] = swarm.particle_coordinates.data[:, 0]
+        points[:, 1] = swarm.particle_coordinates.data[:, 1]
+        
+        point_cloud = pv.PolyData(points)
+        
+        point_cloud.point_data["M"] = material.data.copy()
+        
+    pl.add_points(point_cloud, render_points_as_spheres=False, point_size=5, opacity=0.5)
+    
+    # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
+
+    # pl.add_points(pdata)
+
+    pl.show(cpos="xy")
 
 # %% [markdown]
 # ##### Additional mesh vars to save

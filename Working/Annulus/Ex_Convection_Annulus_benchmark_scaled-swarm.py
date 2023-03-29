@@ -16,7 +16,7 @@ import sympy
 
 import os
 
-from underworld3.utilities import generateXdmf
+from underworld3.utilities import generateXdmf, swarm_h5, swarm_xdmf
 
 # options = PETSc.Options()
 # options["help"] = None
@@ -25,7 +25,7 @@ from underworld3.utilities import generateXdmf
 # options.getAll()
 
 # +
-benchmark = 2
+benchmark = 1
 
 
 if benchmark == 2:
@@ -56,14 +56,14 @@ boundaryConditions = 'NS'
 
 if boundaryConditions == 'FS':
     if visc_UM == visc_LM:
-        outputPath = f'./output/mantleConvection-FS-Mvisc={visc_UM}/'
+        outputPath = f'./output/mantleConvection_swarm-FS-Mvisc={visc_UM}/'
     else:
-        outputPath = f'./output/mantleConvection-FS-UMvisc={visc_UM}_LMvisc={visc_LM}/'
+        outputPath = f'./output/mantleConvection_swarm-FS-UMvisc={visc_UM}_LMvisc={visc_LM}/'
 else:
     if visc_UM == visc_LM:
-        outputPath = f'./output/mantleConvection-NS-Mvisc={visc_UM}/'
+        outputPath = f'./output/mantleConvection_swarm-NS-Mvisc={visc_UM}/'
     else:
-        outputPath = f'./output/mantleConvection-NS-UMvisc={visc_UM}_LMvisc={visc_LM}/'
+        outputPath = f'./output/mantleConvection_swarm-NS-UMvisc={visc_UM}_LMvisc={visc_LM}/'
 # -
 
 if uw.mpi.rank == 0:
@@ -219,16 +219,21 @@ stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_nam
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
 
 
+# -
 
+
+swarm_T = uw.swarm.Swarm(mesh=meshball)
+T1 = uw.swarm.SwarmVariable(r"T^{(-\Delta t)}", swarm_T, 1)
+X1 = uw.swarm.SwarmVariable(r"X^{(-\Delta t)}", swarm_T, 2)
+swarm_T.populate(fill_param=3)
 
 # +
 # #### Create the advDiff solver
 
-adv_diff = uw.systems.AdvDiffusionSLCN(
-    meshball,
-    u_Field=T_soln,
-    V_Field=v_soln,
-    solver_name="adv_diff")
+adv_diff = uw.systems.AdvDiffusionSwarm(
+    meshball, u_Field=T_soln, u_Star_fn=T1.sym, V_Field=v_soln,
+    solver_name="adv_diff_swarms"  # not needed if coords is provided
+)
 
 
 # +
@@ -344,10 +349,10 @@ initial_T = (r-Ri)/(Ro-Ri)*(To-Ti)+Ti + A*sympy.sin(7*th) + B*sympy.sin(13*th) +
 
 with meshball.access(T_soln):
     T_soln.data[:,0] = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N) * u.kelvin)
+
+with swarm_T.access(T1):
+    T1.data[:,0] = uw.function.evaluate(T_soln.sym[0], swarm_T.particle_coordinates.data)
     
-    T0 = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N) * u.kelvin)
-    
-rho_0 = uw.function.evaluate(T_density, T_soln.coords, meshball.N) 
 
 with meshball.access(meshr):
     meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshball.data, meshball.N)  # cf radius_fn which is 0->1
@@ -524,10 +529,13 @@ def saveData(step, outputPath, time):
     viewer.destroy()              
     generateXdmf(fname, xfname)
     
+    
+    swarm_h5(swarm=swarm_T, fileName='swarm_T', fields=[T1,], timestep=step, outputPath=outputPath)
+    swarm_xdmf(fileName='swarm_T', fields=[T1,], timestep=step, outputPath=outputPath)
+    
     # ### save all swarm variables attached to DM
     # x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
     # swarm.dm.viewXDMF(x_swarm_fname)
-
 
 step = 0
 time = 0.
@@ -565,6 +573,13 @@ while step < 31:
     stokes.solve()
     delta_t = adv_diff.estimate_dt()
     adv_diff.solve(timestep=delta_t)
+    
+    # Update the swarm vallues
+    with swarm_T.access(T1):
+        T1.data[:,0] = uw.function.evaluate(T_soln.sym[0], swarm_T.particle_coordinates.data)
+ 
+    # Update the swarm locations
+    swarm_T.advection(v_soln.sym, delta_t=delta_t) 
 
     # stats then loop
     tstats = T_soln.stats()

@@ -100,17 +100,13 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
 adv_diff.constitutive_model.Parameters.diffusivity = kappa
 
-# +
-# %%
 ### fix temp of top and bottom walls
-# adv_diff.add_dirichlet_bc(1.0, "Bottom")
-# adv_diff.add_dirichlet_bc(1.0, "Top")
-# adv_diff.add_dirichlet_bc(1.0, "Left")
-# adv_diff.add_dirichlet_bc(1.0, "Right")
-# -
+adv_diff.add_dirichlet_bc(0., "Bottom")
+adv_diff.add_dirichlet_bc(0., "Top")
+adv_diff.add_dirichlet_bc(0., "Left")
+adv_diff.add_dirichlet_bc(0., "Right")
 
 
-# %%
 maxY = mesh.data[:, 1].max()
 minY = mesh.data[:, 1].min()
 
@@ -214,7 +210,7 @@ plot_fig()
 step = 0
 time = 0.0
 
-nsteps = 101
+nsteps = 31
 
 while step < nsteps:
     ### print some stuff
@@ -287,6 +283,8 @@ if uw.mpi.size == 1:
         use_transparency=False,
         opacity=0.95,
     )
+    
+    
 
 
     # )
