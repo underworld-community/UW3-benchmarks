@@ -192,32 +192,17 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     u_Field=T_soln,
     V_Field=v_soln,
     solver_name="adv_diff")
+# -
 
 
-# +
 swarm = uw.swarm.Swarm(mesh=meshball)
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=True)
-swarm.populate(fill_param=0)
+swarm.populate(fill_param=1)
 
 
-swarm1 = uw.swarm.Swarm(mesh=meshball)
-mat = uw.swarm.IndexSwarmVariable("mat", swarm1, indices=2, proxy_continuous=True)
-swarm1.populate(fill_param=2)
-
-
-# +
 with swarm.access(material):
     material.data[:] = 0
     material.data[np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2) <= rInt] = 1
-
-with swarm1.access(mat):
-    mat.data[:] = 0
-    mat.data[np.sqrt(swarm1.data[:,0]**2 + swarm1.data[:,1]**2) <= rInt] = 1
-# -
-
-outputPath
-
-swarm1.save_checkpoint(outputPath=outputPath, swarmName='swarm1', swarmVars=[mat], index=0, time=0)
 
 if uw.mpi.size == 1:
     import numpy as np
@@ -506,6 +491,8 @@ def saveData(step, outputPath, time):
     viewer.destroy()              
     generateXdmf(fname, xfname)
     
+    swarm.save_checkpoint(outputPath=outputPath, swarmName='swarm', swarmVars=[material], index=step, time=round(dim(time, u.megayear).m, 2))
+    
     # ### save all swarm variables attached to DM
     # x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
     # swarm.dm.viewXDMF(x_swarm_fname)
@@ -520,17 +507,17 @@ time_dim = 0.
 #     print(v_soln.data[np.where(uw.function.evaluate(surface_fn, meshball.data) == 1 )])
 
 # +
-UM_visc = nd(1e24*u.pascal*u.second)
+UM_visc = nd(1e22*u.pascal*u.second)
 
 LM_visc = nd(1e24*u.pascal*u.second)
+# -
+
+viscosity = sympy.Piecewise((LM_visc, sympy.sqrt(x**2+y**2) <= rInt), (UM_visc, True))
 
 # +
-### assign material viscosity
-viscosity = UM_visc * material.sym[0] + LM_visc * material.sym[1]
-
 # Constant visc
 stokes.constitutive_model.Parameters.viscosity = viscosity
-
+stokes.petsc_options['pc_type']   = 'lu'
 stokes.tolerance                  = 1e-4
 stokes.petsc_options["snes_atol"] = 1.0e-6
 stokes.petsc_options["snes_rtol"] = 1.0e-8
@@ -538,10 +525,9 @@ stokes.petsc_options["snes_rtol"] = 1.0e-8
 stokes.solve(zero_init_guess=True)
 
 # +
-stokes.petsc_options['pc_type'] = 'lu'
 stokes.petsc_options["snes_max_it"] = 500
 
-stokes.tolerance                  = 1e-4
+stokes.tolerance                   = 1e-4
 stokes.petsc_options["snes_atol"] = 1.0e-6
 stokes.petsc_options["snes_rtol"] = 1.0e-8
 
@@ -564,7 +550,10 @@ UM_visc_lim = sympy.Max(nd(1e22*u.pascal*u.second), sympy.Min(UM_visc, nd(1e25*u
 LM_visc_lim = 30 * nd(1e22*u.pascal*u.second)
 
 ### assign material viscosity
-viscosity = UM_visc_lim * material.sym[0] + LM_visc_lim * material.sym[1]
+# viscosity = UM_visc_lim * material.sym[0] + LM_visc_lim * material.sym[1]
+
+### assign viscosity based on location
+viscosity = sympy.Piecewise((LM_visc, sympy.sqrt(x**2+y**2) <= rInt), (UM_visc, True))
 
 # NL viscoplasitc viscosity
 stokes.constitutive_model.Parameters.viscosity = viscosity
@@ -594,18 +583,13 @@ while step < 31:
     delta_t = adv_diff.estimate_dt()
     adv_diff.solve(timestep=delta_t)
     
-    swarm1.advection(v_soln.sym, delta_t=delta_t) 
+    swarm.advection(v_soln.sym, delta_t=delta_t) 
 
     # stats then loop
     tstats = T_soln.stats()
         
     step += 1
     time += delta_t
-    
-    
-        
-
-
 # -
 
 
