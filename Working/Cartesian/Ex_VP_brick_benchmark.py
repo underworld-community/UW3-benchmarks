@@ -30,6 +30,8 @@ from underworld3 import timing
 timing.reset()
 timing.start()
 
+# #### Scaling of the model
+
 # +
 # import unit registry to make it easy to convert between units
 u = uw.scaling.units
@@ -55,6 +57,9 @@ scaling_coefficients["[time]"] = Kt
 scaling_coefficients["[mass]"]= KM
 
 scaling_coefficients
+# -
+
+# #### Set up the box and create the mesh
 
 # +
 xmin, xmax = 0., ndim(40*u.kilometer)
@@ -78,7 +83,21 @@ BGIndex    = 1
 #                                     maxCoords=(xmax,ymax))
 
 mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin,ymin), 
-                                         maxCoords=(xmax,ymax), cellSize=0.05)
+                                         maxCoords=(xmax,ymax), cellSize=0.03)
+
+# +
+v_soln = uw.discretisation.MeshVariable(r"U", mesh, mesh.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable(r"P", mesh, 1, degree=1, continuous=True)
+p_null = uw.discretisation.MeshVariable(r"P2", mesh, 1, degree=1, continuous=True)
+
+edot = uw.discretisation.MeshVariable(
+    r"\dot\varepsilon", mesh, 1, degree=1, continuous=True
+)
+visc = uw.discretisation.MeshVariable(r"\eta", mesh, 1, degree=1, continuous=True)
+stress = uw.discretisation.MeshVariable(r"\sigma", mesh, 1, degree=1, continuous=True)
+# -
+
+# #### Add a swarm, which is used to map the viscosity to the material
 
 # +
 swarm = uw.swarm.Swarm(mesh=mesh)
@@ -89,21 +108,9 @@ mat = uw.swarm.IndexSwarmVariable(
     'mat', swarm, indices=2, proxy_degree=0)
 
 swarm.populate(fill_param=2)
-# -
-
-v_soln = uw.discretisation.MeshVariable(r"U", mesh, mesh.dim, degree=2)
-p_soln = uw.discretisation.MeshVariable(r"P", mesh, 1, degree=1, continuous=True)
-p_null = uw.discretisation.MeshVariable(r"P2", mesh, 1, degree=1, continuous=True)
-
-edot = uw.discretisation.MeshVariable(
-    r"\dot\varepsilon", mesh, 1, degree=1, continuous=True
-)
-visc = uw.discretisation.MeshVariable(r"\eta", mesh, 1, degree=1, continuous=True)
-stress = uw.discretisation.MeshVariable(r"\sigma", mesh, 1, degree=1, continuous=True)
 
 # + [markdown] magic_args="[markdown]"
-# This is how we extract cell data from the mesh. We can map it to the swarm data structure and use this to
-# build material properties that depend on cell type.
+# - Update the material based on its location
 # -
 
 for i in [material, mat]:
@@ -113,7 +120,7 @@ for i in [material, mat]:
                   (swarm.data[:,0] >= (((xmax - xmin) / 2.) - (BrickLength / 2.)) ) & 
                   (swarm.data[:,0] <= (((xmax - xmin) / 2.) + (BrickLength / 2.)) )] = BrickIndex
 
-# check the mesh if in a notebook / serial
+# - Check the material has been distributed correctly
 
 if uw.mpi.size == 1:
     import numpy as np
@@ -171,9 +178,7 @@ if uw.mpi.size == 1:
     pl.show(cpos="xy")
 
 
-# ### Check that this mesh can be solved for a simple, linear problem
-
-# Create Stokes object
+# #### Create the Stokes solver object
 
 stokes = uw.systems.Stokes(
     mesh,
@@ -184,37 +189,17 @@ stokes = uw.systems.Stokes(
 )
 
 
-# +
-# Set solve options here (or remove default values
-stokes.petsc_options["ksp_monitor"] = None
-
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
-# stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_type"
-] = "gamg"  # can use gasm / gamg / lu here
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_gasm_type"
-] = "basic"  # can use gasm / gamg / lu here
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_gamg_type"
-] = "classical"  # can use gasm / gamg / lu here
-stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
-stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
-
-stokes.petsc_options['pc_type'] = 'lu'
-
-# -
-
+# #### Set up the constitutive model to store the viscosity
 
 viscosity_L = nd(1e20*u.pascal*u.second) * mat.sym[0] + \
               nd(1e25*u.pascal*u.second) * mat.sym[1] 
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
-stokes.constitutive_model.Parameters.viscosity = viscosity_L
-stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 0.1
+stokes.constitutive_model.Parameters.viscosity = sympy.sympify(1)
 
+# #### Set up boundary conditions
+
+# +
 # Velocity boundary conditions
 vel = nd(2e-11 * u.meter / u.second)
 
@@ -224,7 +209,10 @@ stokes.add_dirichlet_bc(-vel, "Right", 0)
 stokes.add_dirichlet_bc(0, "Right", 1)
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 # stokes.add_dirichlet_bc((0.0,), "Top", (1,))
+# -
 
+
+# #### Set up the body foce of the model
 
 nd_gravity = nd(9.81*u.meter/u.second**2)
 nd_density = nd(2.7e3*u.kilogram/u.meter**3)
@@ -232,32 +220,7 @@ nd_density = nd(2.7e3*u.kilogram/u.meter**3)
 stokes.bodyforce = sympy.Matrix([0, -1*nd_gravity*nd_density])
 
 
-# +
-x, y = mesh.X
-
-res = 0.1
-hw = 1000.0 / res
-surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)
-base_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
-edges_fn = sympy.exp(-((x - 2) ** 2) / 0.025) + sympy.exp(-((x + 2) ** 2) / 0.025)
-# stokes.bodyforce -= 10000.0 * surface_defn_fn * v_soln.sym[1] * mesh.CoordinateSystem.unit_j
-# -
-
-# This is a strategy to obtain integrals over the surface (etc)
-
-
-def surface_integral(mesh, uw_function, mask_fn):
-
-    calculator = uw.maths.Integral(mesh, uw_function * mask_fn)
-    value = calculator.evaluate()
-
-    calculator.fn = mask_fn
-    norm = calculator.evaluate()
-
-    integral = value / norm
-
-    return integral
-
+# #### Create projections of parameters for checkpointing or visualisation
 
 strain_rate_calc = uw.systems.Projection(mesh, edot)
 strain_rate_calc.uw_function = stokes._Einv2
@@ -274,6 +237,8 @@ stress_calc.uw_function = (
 )
 stress_calc.smoothing = 1.0e-3
 
+
+# #### Create function to plot the strain rate of the model
 
 def plotFig():
     import numpy as np
@@ -304,9 +269,6 @@ def plotFig():
     points[:, 0] = mesh._centroids[:, 0]
     points[:, 1] = mesh._centroids[:, 1]
 
-    pvmesh.point_data["sfn"] = uw.function.evaluate(
-        surface_defn_fn, mesh.data, mesh.N
-    )
     pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh.data)
     pvmesh.point_data["str"] = uw.function.evaluate(stress.sym[0], mesh.data)
     # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh.data, mesh.N)
@@ -364,16 +326,49 @@ def plotFig():
 
     pl.show(cpos="xy")
 
+# #### Add in some solver options
+
 # +
-# First, we solve the linear problem
-stokes.petsc_options["snes_atol"] = 1.0e-6
-stokes.petsc_options["snes_rtol"] = 1.0e-6
+### Set solve options here (or remove default values
+stokes.petsc_options["ksp_monitor"] = None
+
+# # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
+# # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
+# stokes.petsc_options[
+#     "fieldsplit_pressure_pc_type"
+# ] = "gamg"  # can use gasm / gamg / lu here
+# stokes.petsc_options[
+#     "fieldsplit_pressure_pc_gasm_type"
+# ] = "basic"  # can use gasm / gamg / lu here
+# stokes.petsc_options[
+#     "fieldsplit_pressure_pc_gamg_type"
+# ] = "classical"  # can use gasm / gamg / lu here
+# stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
+# stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
+
+
+stokes.petsc_options['pc_type'] = 'lu'
+
+# +
 stokes.petsc_options["snes_max_it"] = 500
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
+stokes.petsc_options["snes_atol"] = 1e-6
+stokes.petsc_options["snes_rtol"] = 1e-6
+# -
+
+# #### Linear solve to get initial guess
+
+# +
+# First, we solve the linear problem
+
+
+
 stokes.constitutive_model.Parameters.viscosity = viscosity_L
 stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 0.1
+
+
+# stokes.penalty = 0.1
+# stokes.tolerance = 1e-6
 
 
 
@@ -387,6 +382,10 @@ if uw.mpi.rank == 0:
 if uw.mpi.size ==1:
     plotFig()
 
+# #### Add in VP material
+# - Using the harmonic mean method
+# - Uses the linear solve as the starting point
+
 tau_y = nd(1e8*u.pascal)
 viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
 
@@ -399,28 +398,40 @@ viscosity = visc_brick   * mat.sym[0] + \
 
 stokes.constitutive_model.Parameters.viscosity = viscosity
 stokes.saddle_preconditioner = 1 / viscosity
+
+# stokes.penalty = 0.1
+# stokes.tolerance = 1e-6
+
 stokes.solve(zero_init_guess=False)
 # -
 
 
 if uw.mpi.size ==1:
     plotFig()
+
+# #### Another VP solve
+# - This uses the minimum method
+# - Uses the harmonic mean solve as the starting point
+# - (Takes much longer)
 
 # +
-# visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
+# # visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
 
-visc_bg = sympy.Min(nd(1e25*u.pascal*u.second), viscosity_Y)
+# visc_bg = sympy.Min(nd(1e25*u.pascal*u.second), viscosity_Y)
 
-visc_brick = nd(1e20*u.pascal*u.second)
+# visc_brick = nd(1e20*u.pascal*u.second)
 
-viscosity = visc_brick * mat.sym[0] + \
-            visc_bg    * mat.sym[1]
+# viscosity = visc_brick * mat.sym[0] + \
+#             visc_bg    * mat.sym[1]
 
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.saddle_preconditioner = 1 / viscosity
-stokes.solve(zero_init_guess=False)
+# stokes.constitutive_model.Parameters.viscosity = viscosity
+# stokes.saddle_preconditioner = 1 / viscosity
 
+# stokes.penalty = 0.1
+# stokes.tolerance = 1e-6
+
+# stokes.solve(zero_init_guess=False)
 # -
 
-if uw.mpi.size ==1:
-    plotFig()
+
+

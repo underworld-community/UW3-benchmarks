@@ -117,6 +117,8 @@ T_cmb  = nd(T_1 * u.kelvin)
 # -
 
 
+rI, rInt, rO
+
 res = 0.075
 
 # +
@@ -141,7 +143,8 @@ T_soln       = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)
 T0           = uw.discretisation.MeshVariable("T0", meshball, 1, degree=3)
 timeField    = uw.discretisation.MeshVariable("time", meshball, 1, degree=1)
 density_proj = uw.discretisation.MeshVariable("rho", meshball, 1, degree=1)
-visc         = uw.discretisation.MeshVariable(r"\eta", meshball, 1, degree=1, continuous=True)
+visc_proj    = uw.discretisation.MeshVariable(r"\eta", meshball, 1, degree=1, continuous=True)
+SR_proj      = uw.discretisation.MeshVariable(r"\SR", meshball, 1, degree=1, continuous=True)
 meshr        = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
 
 # +
@@ -182,17 +185,15 @@ stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_nam
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
 stokes.constitutive_model.Parameters.viscosity = sympy.sympify(1)
 
+# -
 
 
-# +
 # #### Create the advDiff solver
-
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshball,
     u_Field=T_soln,
     V_Field=v_soln,
     solver_name="adv_diff")
-# -
 
 
 swarm = uw.swarm.Swarm(mesh=meshball)
@@ -269,9 +270,13 @@ nodal_rho_calc.uw_function = T_density
 nodal_rho_calc.smoothing = 0.
 nodal_rho_calc.petsc_options.delValue("ksp_monitor")
 
-viscosity_calc = uw.systems.Projection(meshball, visc)
+viscosity_calc = uw.systems.Projection(meshball, visc_proj)
 viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
 viscosity_calc.smoothing = 1.0e-3
+
+SR_calc = uw.systems.Projection(meshball, SR_proj)
+SR_calc.uw_function = stokes._Einv2
+SR_calc.smoothing = 1.0e-3
 
 def updateFields(time):
     ### density
@@ -281,6 +286,11 @@ def updateFields(time):
     viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
     viscosity_calc.smoothing = 1.0e-3
     viscosity_calc.solve(_force_setup=True)
+    
+    ### strain rate
+    SR_calc.uw_function = stokes._Einv2
+    SR_calc.smoothing = 1.0e-3
+    SR_calc.solve(_force_setup=True)
     
     ### time
     with meshball.access(timeField):
@@ -406,9 +416,6 @@ if uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 # +
-# Create adv_diff object
-
-# Set some things
 nd_k = nd(kappa * u.meter**2/u.second)
 
 
@@ -486,12 +493,13 @@ def saveData(step, outputPath, time):
     viewer(stokes.p._gvec)         # add pressure
     viewer(T_soln._gvec)           # add temperature
     viewer(density_proj._gvec)     # add density
-    viewer(visc._gvec)             # add viscosity
+    viewer(visc_proj._gvec)             # add viscosity
+    viewer(SR_proj._gvec)               # add strain rate
     viewer(timeField._gvec)        # add time
     viewer.destroy()              
     generateXdmf(fname, xfname)
     
-    swarm.save_checkpoint(outputPath=outputPath, swarmName='swarm', swarmVars=[material], index=step, time=round(dim(time, u.megayear).m, 2))
+    swarm.save_checkpoint(outputPath=outputPath, swarmName='swarm', swarmVars=[material], index=step, time=None)
     
     # ### save all swarm variables attached to DM
     # x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
@@ -512,62 +520,91 @@ UM_visc = nd(1e22*u.pascal*u.second)
 LM_visc = nd(1e24*u.pascal*u.second)
 # -
 
-viscosity = sympy.Piecewise((LM_visc, sympy.sqrt(x**2+y**2) <= rInt), (UM_visc, True))
+viscosity = sympy.Piecewise((LM_visc, sympy.sqrt(x**2+y**2) <= rInt), (UM_visc, sympy.sqrt(x**2+y**2) > rInt))
+
+# +
+stokes.petsc_options["ksp_monitor"] = None
+
+# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
+# stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
+# stokes.petsc_options[
+#     "fieldsplit_pressure_pc_type"
+# ] = "gamg"  # can use gasm / gamg / lu here
+# stokes.petsc_options[
+#     "fieldsplit_pressure_pc_gasm_type"
+# ] = "basic"  # can use gasm / gamg / lu here
+# stokes.petsc_options[
+#     "fieldsplit_pressure_pc_gamg_type"
+# ] = "classical"  # can use gasm / gamg / lu here
+# stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
+# stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
+
+
+stokes.petsc_options['pc_type'] = 'lu'
+# -
+
+stokes.petsc_options["snes_max_it"] = 500
+stokes.petsc_options["snes_atol"] = 1e-6
+stokes.petsc_options["snes_rtol"] = 1e-6
+
+
+# Check the diffusion part of the solve converges
+adv_diff.petsc_options["ksp_monitor"] = None
+adv_diff.petsc_options["monitor"] = None
+# adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
 
 # +
 # Constant visc
+# stokes.tolerance = 1e-6 ### 1e-4 # default
 stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.petsc_options['pc_type']   = 'lu'
-stokes.tolerance                  = 1e-4
-stokes.petsc_options["snes_atol"] = 1.0e-6
-stokes.petsc_options["snes_rtol"] = 1.0e-8
+stokes.saddle_preconditioner = 1 / viscosity
+
 
 stokes.solve(zero_init_guess=True)
 
 # +
-stokes.petsc_options["snes_max_it"] = 500
-
-stokes.tolerance                   = 1e-4
-stokes.petsc_options["snes_atol"] = 1.0e-6
-stokes.petsc_options["snes_rtol"] = 1.0e-8
-
-# +
 with swarm.access():
     depth = (rO - np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2))
+    
+tau_y_UM = nd(5e8*u.pascal)
 
-tau_y = nd(1e9*u.pascal)
+viscosity_Y_UM = (tau_y_UM / (2 * stokes._Einv2 + 1.0e-18))
 
-# # + jupyter={"outputs_hidden": true}
-# viscosity_L = 999.0 * material.sym[0] + 1.0
-viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
-# viscosity = 1 / ((1 / viscosity_Y) + (1 / viscosity_L))
+UM_visc = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y_UM))
 
-UM_visc = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
-
-UM_visc_lim = sympy.Max(nd(1e22*u.pascal*u.second), sympy.Min(UM_visc, nd(1e25*u.pascal*u.second)) )
+UM_visc_lim = sympy.Max(nd(1e21*u.pascal*u.second), sympy.Min(UM_visc, nd(1e25*u.pascal*u.second)) )
 
 
-LM_visc_lim = 30 * nd(1e22*u.pascal*u.second)
+tau_y_LM = nd(5e9*u.pascal)
+
+viscosity_Y_LM = (tau_y_LM / (2 * stokes._Einv2 + 1.0e-18))
+
+LM_visc = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y_LM))
+
+
+LM_visc_lim = sympy.Max(nd(1e21*u.pascal*u.second), sympy.Min(LM_visc, nd(1e25*u.pascal*u.second)) )
+
+
+
 
 ### assign material viscosity
 # viscosity = UM_visc_lim * material.sym[0] + LM_visc_lim * material.sym[1]
 
 ### assign viscosity based on location
-viscosity = sympy.Piecewise((LM_visc, sympy.sqrt(x**2+y**2) <= rInt), (UM_visc, True))
+viscosity = sympy.Piecewise((LM_visc_lim, sympy.sqrt(x**2+y**2) <= rInt), (UM_visc_lim, sympy.sqrt(x**2+y**2) > rInt))
 
-# NL viscoplasitc viscosity
-stokes.constitutive_model.Parameters.viscosity = viscosity
+
 # -
 
-# Check the diffusion part of the solve converges
-adv_diff.petsc_options["ksp_monitor"] = None
-adv_diff.petsc_options["monitor"] = None
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
+# NL viscoplasitc viscosity
+# stokes.tolerance = 1e-6 # 1e-4 # default
+stokes.constitutive_model.Parameters.viscosity = viscosity
+stokes.saddle_preconditioner = 1 / viscosity
 
 # +
 # Convection model / update in time
 
-while step < 31:
+while step < 101:
     
     time_dim = dim(time, u.megayear)
 
@@ -593,7 +630,7 @@ while step < 31:
 # -
 
 
-plotFig(var='eta', arrowSize=0.1)
+plotFig(var='eta', arrowSize=5)
 
 if uw.mpi.size == 1:
     import numpy as np
@@ -613,15 +650,15 @@ if uw.mpi.size == 1:
 
     pl = pv.Plotter()
     
-    with swarm1.access(mat):
-        points = np.zeros((swarm1.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm1.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm1.particle_coordinates.data[:, 1]
+    with swarm.access(material):
+        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
+        points[:, 0] = swarm.particle_coordinates.data[:, 0]
+        points[:, 1] = swarm.particle_coordinates.data[:, 1]
         
         point_cloud = pv.PolyData(points)
         
-        point_cloud.point_data["M"] = mat.data.copy()
-        point_cloud.point_data["depth"] = (rO - np.sqrt(mat.swarm.data[:,0]**2 + mat.swarm.data[:,1]**2))*refLength
+        point_cloud.point_data["M"] = material.data.copy()
+        point_cloud.point_data["depth"] = (rO - np.sqrt(material.swarm.data[:,0]**2 + material.swarm.data[:,1]**2))*refLength
         
     pl.add_points(
         point_cloud,
