@@ -6,6 +6,11 @@
 # This example solves 2D dimensionless isoviscous thermal convection with a Rayleigh number, for comparison with the [Blankenbach et al. (1989) benchmark](https://academic.oup.com/gji/article/98/1/23/622167).
 # 
 # We set up a v, p, T system in which we will solve for a steady-state T field in response to thermal boundary conditions and then use the steady-state T field to compute a stokes flow in response.
+# 
+# There are two options:
+# 1. The user can run a single model by setting do_rerun flag to False.
+# 2. The user can run a low resolution model until it reaches a steady state, copy the physical fields into a second model with a higher resolution, then run the second model reaches its steady state.
+# This is done by setting do_rerun to True and the parameters accordingly.
 
 # %%
 import petsc4py
@@ -15,11 +20,14 @@ import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
 
+import os 
 import numpy as np
 import sympy
 
+# %% [markdown]
+# ### Set parameters to use 
+
 # %%
-##### Set some things
 Ra = 1e4 #### Rayleigh number
 
 k = 1.0 #### diffusivity
@@ -31,24 +39,32 @@ tempMax   = 1.
 
 viscosity = 1
 
-res= 16     ### x and y res of box
+res= 16             ### x and y res of box
+nsteps = 1000        ### maximum number of time steps to run the first model 
+epsilon_lr = 1e-8   ### criteria for early stopping; relative change of the Vrms in between iterations  
 
+##########
 # parameters needed when a high res model is run after a low res model
+##########
+do_rerun = True 
+res2 = 64
+nsteps_hr = 1000     ### maximum number of time steps to run the second model      
+epsilon_hr = 1e-8   ### criteria for early stopping
 
-do_rerun = True # if this is set to True, a low resolution model is first run followed by a high resolution model
 
+# %% [markdown]
+# ### Create mesh and variables
 
 # %%
 # meshbox = uw.meshing.UnstructuredSimplexBox(
-#     minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1.0 / 32.0, regular=True, qdegree=2
-# )
+#                                                 minCoords=(0.0, 0.0), maxCoords=(boxLength, boxHeight), cellSize=1.0 /res, regular=True, qdegree=2
+#                                         )
 
 meshbox = uw.meshing.StructuredQuadBox(minCoords=(0.0, 0.0), maxCoords=(boxLength, boxHeight),  elementRes=(res,res))
 
 
 # %%
-# check the mesh if in a notebook / serial
-
+# visualise the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
     import numpy as np
@@ -91,15 +107,19 @@ sigma_zz = uw.discretisation.MeshVariable(r"\sigma_{zz}",
                                         meshbox, 
                                         1, degree=1)
 
-# %%
-x, y = meshbox.X
 
-# gradient of temp field 
-t_soln_grad = uw.systems.Projection(meshbox, dTdZ)
-delT = t_soln.sym.diff(y)[0]
-t_soln_grad.uw_function = delT
-t_soln_grad.smoothing = 1.0e-3
-t_soln_grad.petsc_options.delValue("ksp_monitor")
+# ### some projection objects to calculate the
+# x, y = meshbox.X
+
+# t_soln_grad = uw.systems.Projection(meshbox, dTdZ)
+# delT = t_soln.sym.diff(y)[0]
+# t_soln_grad.uw_function = delT
+# t_soln_grad.smoothing = 1.0e-3
+# t_soln_grad.petsc_options.delValue("ksp_monitor")
+
+# %% [markdown]
+# ### System set-up 
+# Create solvers and set boundary conditions
 
 # %%
 # Create Stokes object
@@ -115,15 +135,13 @@ stokes = Stokes(
 
 # Set solve options here (or remove default values
 # stokes.petsc_options.getAll()
-# stokes.petsc_options.delValue("ksp_monitor")
 
-# stokes.petsc_options["snes_rtol"] = 1.0e-6
+#stokes.petsc_options["snes_rtol"] = 1.0e-6
 # stokes.petsc_options["fieldsplit_pressure_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-2
 # stokes.petsc_options.delValue("pc_use_amat")
-
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
 stokes.constitutive_model.Parameters.viscosity=viscosity
@@ -135,10 +153,14 @@ stokes.add_dirichlet_bc((0.0,), "Right", (0,))
 stokes.add_dirichlet_bc((0.0,), "Top", (1,))
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 
+
+#### buoyancy_force = rho0 * (1 + (beta * deltaP) - (alpha * deltaT)) * gravity
+# buoyancy_force = (1 * (1. - (1 * (t_soln.sym[0] - tempMin)))) * -1
+buoyancy_force = Ra * t_soln.sym[0]
+stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
+
 # %%
 # Create adv_diff object
-
-
 
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
@@ -152,15 +174,23 @@ adv_diff.constitutive_model.Parameters.diffusivity = k
 
 adv_diff.theta = 0.5
 
+# Dirichlet boundary conditions for temperature
 adv_diff.add_dirichlet_bc(1.0, "Bottom")
 adv_diff.add_dirichlet_bc(0.0, "Top")
 
-# %%
-pertStrength = 0.1
-deltaTemp = tempMax - tempMin
+adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 5
+
+# %% [markdown]
+# ### Set initial temperature field 
+# 
+# The initial temperature field is set to a sinusoidal perturbation. 
 
 # %%
 import math, sympy
+
+pertStrength = 0.1
+deltaTemp = tempMax - tempMin
+
 with meshbox.access(t_soln, t_0):
     t_soln.data[:] = 0.
     t_0.data[:] = 0.
@@ -177,8 +207,12 @@ with meshbox.access(t_soln, t_0):
     t_0.data[:,0] = t_soln.data[:,0]
 
 
+# %% [markdown]
+# ### Some plotting and analysis tools 
+
 # %%
 # check the mesh if in a notebook / serial
+# allows you to visualise the mesh with initial perturbation
 
 def plotFig(meshbox = meshbox, v_soln = v_soln, t_soln = t_soln, dTdZ = dTdZ, is_grad = False): 
     """
@@ -264,24 +298,6 @@ def plotFig(meshbox = meshbox, v_soln = v_soln, t_soln = t_soln, dTdZ = dTdZ, is
 plotFig()
 
 # %%
-#### buoyancy_force = rho0 * (1 + (beta * deltaP) - (alpha * deltaT)) * gravity
-# buoyancy_force = (1 * (1. - (1 * (t_soln.sym[0] - tempMin)))) * -1
-
-buoyancy_force = Ra * t_soln.sym[0]
-stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
-
-# %%
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 5
-
-# %%
-def v_rms(mesh = meshbox, v_solution = v_soln): 
-    # v_soln must be a variable of mesh
-    v_rms = math.sqrt(uw.maths.Integral(mesh, v_solution.fn.dot(v_solution.fn)).evaluate())
-    return v_rms
-
-print(f'initial v_rms = {v_rms()}')
-
-# %%
 def plot_T_mesh(filename):
 
     if uw.mpi.size == 1:
@@ -362,14 +378,33 @@ def plot_T_mesh(filename):
 
         pv.close_all()
 
+# %% [markdown]
+# #### RMS velocity
+# The root mean squared velocity, $v_{rms}$, is defined as: 
+# 
+# 
+# \begin{aligned}
+# v_{rms}  =  \sqrt{ \frac{ \int_V (\mathbf{v}.\mathbf{v}) dV } {\int_V dV} }
+# \end{aligned}
+# 
+# where $\bf{v}$ denotes the velocity field and $V$ is the volume of the box.
+
+# %%
+# underworld3 function for calculating the rms velocity 
+
+def v_rms(mesh = meshbox, v_solution = v_soln): 
+    # v_soln must be a variable of mesh
+    v_rms = math.sqrt(uw.maths.Integral(mesh, v_solution.fn.dot(v_solution.fn)).evaluate())
+    return v_rms
+
+#print(f'initial v_rms = {v_rms()}')
+
+# %% [markdown]
+# ### Main simulation loop
+
 # %%
 t_step = 0
 time = 0.
-
-if do_rerun: 
-    nsteps = 400
-else: 
-    nsteps = 2100
 
 timeVal =  np.zeros(nsteps)*np.nan
 vrmsVal =  np.zeros(nsteps)*np.nan
@@ -377,9 +412,9 @@ vrmsVal =  np.zeros(nsteps)*np.nan
 # %%
 #### Convection model / update in time
 
-"""
-There is a strange interaction here between the solvers if the zero_guess is set to False
-"""
+
+# NOTE: There is a strange interaction here between the solvers if the zero_guess is set to False
+
 
 while t_step < nsteps:
     vrmsVal[t_step] = v_rms()
@@ -397,18 +432,14 @@ while t_step < nsteps:
         
         print(f't_rms = {t_soln.stats()[6]}, v_rms = {v_rms()}')
 
-    # if t_step % 5 == 0:
-    #     plot_T_mesh(filename="{}_step_{}".format(expt_name, t_step))
+    if t_step > 1 and abs((vrmsVal[t_step] - vrmsVal[t_step - 1])/vrmsVal[t_step]) < epsilon_lr:
+        break
 
     t_step += 1
     time   += delta_t
 
 
-# %%
-import os 
-
 # save final mesh variables in the run 
-
 os.makedirs("../meshes", exist_ok = True)
 
 expt_name = "Ra1e4_res" + str(res)
@@ -421,70 +452,63 @@ meshbox.generate_xdmf(savefile)
 # %%
 import matplotlib.pyplot as plt
 
-# plot how v_rms is evolving through time
-
+# plot how v_rms is evolving through time for both low res and high res
 fig,ax = plt.subplots(dpi = 100)
-color = "black"
-ax.set_xlabel("Step")
-ax.set_ylabel(r"$v_{rms}$", color = color)
-ax.plot(vrmsVal, color = color)
-ax.tick_params(axis = "y", labelcolor = color)
-ax.set_xlim([0, 1000])
 
+# low resolution model
+ax.hlines(42.865, 0, 1000, linestyle = "--", linewidth = 0.5, color = "gray", label = r"Benchmark $v_{rms}$")
+ax.plot(np.arange((~np.isnan(vrmsVal)).sum()), 
+        vrmsVal[~np.isnan(vrmsVal)], 
+        color = "k", 
+        label = str(res) + " x " + str(res))
+
+ax.legend()
+ax.set_xlabel("Time step")
+ax.set_ylabel(r"$v_{rms}$", color = "k")
+
+ax.set_xlim([0, 1000])
+ax.set_ylim([0, 100])
 
 # %%
 # Calculate benchmark values
-print("RMS velocity at the final time step is {}.".format(vrmsVal[-1]))
-
-# %%
-# update the gradient values 
-t_soln_grad.solve()
+if uw.mpi.rank == 0:
+    print("RMS velocity at the final time step is {}.".format(v_rms()))
 
 # %% [markdown]
 # ### Create a high resolution model and run it 
-# Note that this is an optional step
+# NOTE: this is an optional step
 
 # %%
 # set-up mesh, variables, and solvers
 
 if do_rerun:
 
-    res2 = 32
+    # if res2 <= res: 
+    #     print("Warning: second model resolution is not higher than the first model's...")
 
-    if res2 <= res: 
-        print("Warning: second model resolution is not higher than the first model's...")
-
+    ##### Setting up of mesh and variables #####
     # set-up mesh
     meshbox_hr = uw.meshing.StructuredQuadBox(minCoords=(0.0, 0.0), maxCoords=(boxLength, boxHeight),  elementRes=(res2,res2))
 
     # set-up mesh variables
-    v_soln_hr = uw.discretisation.MeshVariable("U", meshbox_hr, meshbox_hr.dim, degree=2)
-    p_soln_hr = uw.discretisation.MeshVariable("P", meshbox_hr, 1, degree=1)
-    t_soln_hr = uw.discretisation.MeshVariable("T", meshbox_hr, 1, degree=1)
-    t_0_hr    = uw.discretisation.MeshVariable("T0", meshbox_hr, 1, degree=1)
+    v_soln_hr = uw.discretisation.MeshVariable("U_2", meshbox_hr, meshbox_hr.dim, degree=2)
+    p_soln_hr = uw.discretisation.MeshVariable("P_2", meshbox_hr, 1, degree=1)
+    t_soln_hr = uw.discretisation.MeshVariable("T_2", meshbox_hr, 1, degree=1)
+    t_0_hr    = uw.discretisation.MeshVariable("T0_2", meshbox_hr, 1, degree=1)
 
     # additional variable for the gradient
-    dTdZ_hr   = uw.discretisation.MeshVariable(r"\partial T/ \partial \Z", # FIXME: Z should not be a function of x, y, z 
+    dTdZ_hr   = uw.discretisation.MeshVariable(r"\partial T_2/ \partial \Z", # FIXME: Z should not be a function of x, y, z 
                                             meshbox_hr, 
                                             1, 
                                             degree = 1) 
 
     # variable containing stress in the z direction
-    sigma_zz_hr = uw.discretisation.MeshVariable(r"\sigma_{zz}",  
+    sigma_zz_hr = uw.discretisation.MeshVariable(r"\sigma_{zz,2}",  
                                             meshbox_hr, 
                                             1, 
                                             degree=1)
 
-    x, y = meshbox_hr.X
-
-    # gradient of temp field 
-    t_soln_grad_hr = uw.systems.Projection(meshbox_hr, dTdZ_hr)
-    delT = t_soln_hr.sym.diff(y)[0]
-    t_soln_grad_hr.uw_function = delT
-    t_soln_grad_hr.smoothing = 1.0e-3
-    t_soln_grad_hr.petsc_options.delValue("ksp_monitor")
-
-    ##### set-up the solvers #####
+    ##### set-up the solvers and boundary conditions #####
     # create stokes object
     stokes_hr = Stokes(
                         meshbox_hr,
@@ -519,26 +543,71 @@ if do_rerun:
     adv_diff_hr.add_dirichlet_bc(1.0, "Bottom")
     adv_diff_hr.add_dirichlet_bc(0.0, "Top")
 
+# %% [markdown]
+# ### Copy the p, T, v fields from the low res to the high res model
+
+# %%
+# NOTE: interpolation using uw.fuction.evaluate does not work
+#       work-around is to do nearest neighbor interpolation for mesh variables 
+
+# inputs:
+# hi-res mesh variable
+# low-res mesh variable
+# hr_mesh
+
+def nearest_neigh_workaround(lr_mesh, hr_mesh, lr_mesh_var, hr_mesh_var):
+    '''
+    Inputs:
+    lr_mesh - low resolution mesh
+    hr_mesh - high resolution mesh 
+    lr_mesh_var - low resolution mesh variable
+    hr_mesh_var - high resolution mesh variable
+    # NOTE: do not vary anything in the input variables within the function as it will modify the original variable 
+    '''
+
+    with hr_mesh.access() and lr_mesh.access():
+        
+        data = np.zeros_like(hr_mesh_var.data)
+
+        for i, coord in enumerate(hr_mesh_var.coords):
+            
+            # find coord in lr_mesh_var that is closes to the current coordinate
+            dist = (coord[0] - lr_mesh_var.coords[:, 0])**2 + (coord[1] - lr_mesh_var.coords[:, 1])**2
+            
+            # index in the lr_mesh_var that is closest
+            closest_idx = np.where(dist == dist.min())[0][0]
+
+            data[i] = lr_mesh_var.data[closest_idx]
+
+    return data
+
+
 # %%
 # interpolate the variables from the low res model to the high res model
 if do_rerun: 
+    from copy import deepcopy
+
     with meshbox_hr.access(v_soln_hr, t_soln_hr, p_soln_hr):
         
-        t_soln_hr.data[:, 0] = uw.function.evaluate(t_soln.fn, t_soln_hr.coords)
-        p_soln_hr.data[:, 0] = uw.function.evaluate(p_soln.fn, p_soln_hr.coords)
+        # use nearest-neighbord workaround
+        t_soln_hr.data[:] = nearest_neigh_workaround(meshbox, meshbox_hr, t_soln, t_soln_hr)
+        p_soln_hr.data[:] = nearest_neigh_workaround(meshbox, meshbox_hr, p_soln, p_soln_hr)
+        v_soln_hr.data[:] = nearest_neigh_workaround(meshbox, meshbox_hr, v_soln, v_soln_hr)
 
-        #for velocity, encounters errors when trying to interpolate in the non-zero boundaries of the mesh variables 
-        v_coords = v_soln_hr.coords
+        # NOTE: something is weird when using the uw.function.evaluate
+        # t_soln_hr.data[:, 0] = uw.function.evaluate(t_soln.sym[0], t_soln_hr.coords)
+        # p_soln_hr.data[:, 0] = uw.function.evaluate(p_soln.sym[0], p_soln_hr.coords)
+
+        # #for velocity, encounters errors when trying to interpolate in the non-zero boundaries of the mesh variables 
+        # v_coords = deepcopy(v_soln_hr.coords)
     
-        cond = v_coords[:, 0] == boxLength      # v_x
-        v_coords[cond, 0] = 0.999999*boxLength 
+        # cond = v_coords[:, 0] == boxLength      # v_x
+        # v_coords[cond, 0] = 0.999999*boxLength 
         
-        cond = v_coords[:, 1] == boxHeight      # v_y
-        v_coords[cond, 1] = 0.999999*boxHeight 
+        # cond = v_coords[:, 1] == boxHeight      # v_y
+        # v_coords[cond, 1] = 0.999999*boxHeight 
 
-        v_soln_hr.data[:] = uw.function.evaluate(v_soln.fn, v_coords)
-
-        # FIXME: still need to check what v_soln looks like - see if workaround works 
+        # v_soln_hr.data[:] = uw.function.evaluate(v_soln.fn, v_coords)
 
         # final set-up of other variables
         buoyancy_force = Ra * t_soln_hr.sym[0]
@@ -548,27 +617,33 @@ if do_rerun:
 
 
 # %%
+# Final temperature field solved by the low resolution model
+plotFig(meshbox = meshbox, v_soln = v_soln, t_soln = t_soln, dTdZ = dTdZ, is_grad = False)
+
+# %%
+# Field above interpolated into a high resolution mesh
 plotFig(meshbox = meshbox_hr, v_soln = v_soln_hr, t_soln = t_soln_hr, dTdZ = dTdZ_hr, is_grad = False)
+
+# %% [markdown]
+# ### Main simulation loop for the high resolution model
 
 # %%
 if do_rerun:
     # use the t_step and time from the low-res run
 
-    t_step = nsteps     # remove this later
+    t_step = 0     # better to set this counter to zero
     time = timeVal[-1]  # remove later
-    
-    nsteps_hr = 1000 # test value of 50
 
     timeVal_hr = np.zeros(nsteps_hr)*np.nan
     vrmsVal_hr = np.zeros(nsteps_hr)*np.nan
 
-    while t_step < nsteps + nsteps_hr:
+    while t_step < nsteps_hr:
 
-        print(t_step)
-        vrmsVal_hr[t_step - nsteps] = v_rms(meshbox_hr, v_soln_hr)
-        timeVal_hr[t_step - nsteps] = time
+        #print(t_step)
+        vrmsVal_hr[t_step] = v_rms(meshbox_hr, v_soln_hr)
+        timeVal_hr[t_step] = time
 
-        stokes_hr.solve(zero_init_guess=True) # originally True
+        stokes_hr.solve(zero_init_guess = True)                     # it appears that solver converges whether it is True or False 
         delta_t = 0.5 * stokes_hr.estimate_dt()
         adv_diff_hr.solve(timestep=delta_t, zero_init_guess=False) # originally False
 
@@ -582,12 +657,11 @@ if do_rerun:
 
         # if t_step % 5 == 0:
         #     plot_T_mesh(filename="{}_step_{}".format(expt_name, t_step))
+        if t_step > 1 and abs((vrmsVal_hr[t_step] - vrmsVal_hr[t_step - 1])/vrmsVal_hr[t_step]) < epsilon_hr:
+            break
 
         t_step += 1
         time   += delta_t
-
-# %%
-vrmsVal_hr.shape
 
 # %%
 
@@ -595,27 +669,83 @@ vrmsVal_hr.shape
 if do_rerun:
     fig,ax = plt.subplots(dpi = 100)
 
-    ax.set_xlabel("Step")
+   # low resolution model
+    ax.hlines(42.865, 0, 1000, linestyle = "--", linewidth = 0.5, color = "gray", label = r"Benchmark $v_{rms}$")
+    ax.plot(np.arange((~np.isnan(vrmsVal)).sum()), 
+            vrmsVal[~np.isnan(vrmsVal)], 
+            color = "k", 
+            label = str(res) + " x " + str(res))
+    
+    # high resolution model
+    ax.plot(vrmsVal[~np.isnan(vrmsVal)].shape[0] + np.arange((~np.isnan(vrmsVal_hr)).sum()), 
+            vrmsVal_hr[~np.isnan(vrmsVal_hr)], 
+            linestyle = "--",
+            color = "k", 
+            label = str(res2) + " x " + str(res2)) # fix later
+    
+    ax.legend()
+    ax.set_xlabel("Time step")
     ax.set_ylabel(r"$v_{rms}$", color = "k")
 
-    ax.plot(np.arange(nsteps), vrmsVal, color = "k", label = "12 x 12")
-    ax.tick_params(axis = "y", labelcolor = "k")
-
-    ax.plot(nsteps + np.arange(nsteps_hr), vrmsVal_hr, color = "C0", label = "32 x 32")
-    ax.legend()
-    #ax.tick_params(axis = "y", labelcolor = "C0")
-
-
-    #ax.set_xlim([0, 700])
+    ax.set_xlim([0, 1000])
+    ax.set_ylim([0, 100])
 
 
 
 
 # %%
-vrmsVal[-1] # low res   
+# figure of the high resolution model reaching a steady state
+plotFig(meshbox = meshbox_hr, v_soln = v_soln_hr, t_soln = t_soln_hr, dTdZ = dTdZ_hr, is_grad = False)
+
+# %% [markdown]
+# ### Post-run analysis
+# 
+# **Benchmark values**
+# The loop above outputs $v_{rms}$ as a general statistic for the system. For further comparison, the benchmark values for the RMS velocity, $v_{rms}$, Nusselt number, $Nu$, and non-dimensional gradients at the cell corners, $q_1$ and $q_2$, are shown below for different Rayleigh numbers. All benchmark values shown below were determined in Blankenbach *et al.* 1989 by extroplation of numerical results. 
+# 
+# | $Ra$ | $v_{rms}$ | $Nu$ | $q_1$ | $q_2$ |
+# | ------------- |:-------------:|:-----:|:-----:|:-----:|
+# | 10$^4$ | 42.865 | 4.884 | 8.059 | 0.589 |
+# | 10$^5$ | 193.215 | 10.535 | 19.079 | 0.723 |
+# | 10$^6$ | 833.990 | 21.972 | 45.964 | 0.877 |
 
 # %%
-vrmsVal_hr[-1] # high res
+# set-up variables to use in calculating the benchmark values 
+
+if do_rerun: # re-run with higher resolution mesh
+    meshbox_use = meshbox_hr
+    dTdZ_use = dTdZ_hr 
+    t_soln_use = t_soln_hr
+    sigma_zz_use = sigma_zz_hr
+    sigma_zz_fn = stokes_hr.stress[1, 1]
+else: # 
+    meshbox_use = meshbox 
+    dTdZ_use = dTdZ 
+    t_soln_use = t_soln
+    sigma_zz_use = sigma_zz
+
+    sigma_zz_fn = stokes.stress[1, 1]
+
+### define the Projection object for calculating the temperature gradient
+# define upper and lower surface functions
+x, z = meshbox_use.X
+
+# gradient of temp field 
+t_soln_grad = uw.systems.Projection(meshbox_use, dTdZ_use)
+delT = t_soln_use.sym.diff(z)[0]
+t_soln_grad.uw_function = delT
+t_soln_grad.smoothing = 1.0e-3
+t_soln_grad.petsc_options.delValue("ksp_monitor")
+
+t_soln_grad.solve()
+
+# %% [markdown]
+# ### Calculate the $Nu$ value
+# The Nusselt number is defined as: 
+# 
+# \begin{aligned}
+# Nu  =   -h\frac{ \int_{0}^{l} \partial_{z}T(x, z = h) dx} {\int_{0}^{l} T(x, z = 0) dx} 
+# \end{aligned}
 
 # %%
 # function for calculating the surface integral 
@@ -634,61 +764,94 @@ def surface_integral(mesh, uw_function, mask_fn):
     return integral
 
 # %%
-# define upper and lower surface functions
-x, z = meshbox.X
-
-up_surface_defn_fn = sympy.exp(-1e4*((z - 1)**2)) # at z = 1
-lw_surface_defn_fn = sympy.exp(-1e4*((z)**2)) # at z = 0
+up_surface_defn_fn = sympy.exp(-1e6*((z - 1)**2)) # at z = 1
+lw_surface_defn_fn = sympy.exp(-1e6*((z)**2)) # at z = 0
 
 # display(up_surface_defn_fn)
 # display(lw_surface_defn_fn)
 
-# %%
-# calculate the surface integral for both upper and lower surfaces
-
-up_int = surface_integral(meshbox, dTdZ.sym[0], up_surface_defn_fn)
-lw_int = surface_integral(meshbox, t_soln.sym[0], lw_surface_defn_fn)
+up_int = surface_integral(meshbox_use, dTdZ_use.sym[0], up_surface_defn_fn)
+lw_int = surface_integral(meshbox_use, t_soln_use.sym[0], lw_surface_defn_fn)
 
 Nu = -up_int/lw_int
 
-print("Calculated value of Nu: {}".format(Nu))
+if uw.mpi.rank == 0:
+    print("Calculated value of Nu: {}".format(Nu))
+
+# %% [markdown]
+# ### Calculate the non-dimensional gradients at the cell corners, $q_i$
+# The non-dimensional temperature gradient at the cell corner, $q_i$, is defined as: 
+# \begin{aligned}
+# q  =  \frac{-h}{\Delta T} \left( \frac{\partial T}{\partial z} \right)
+# \end{aligned}
+#    
+# Note that these values depend on the non-dimensional temperature gradient in the vertical direction, $\frac{\partial T}{\partial z}$.
+# These gradients are evaluated at the following points:
+# 
+# $q_1$ at $x=0$, $z=h$; $q_2$ at $x=l$, $z=h$;
+# 
+# $q_3$ at $x=l$, $z=0$; $q_4$ at $x=0$, $z=0$.   
 
 # %%
-# calculate q values which depend onn the temperature gradient fields
+# calculate q values which depend on the temperature gradient fields
 
-q1 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0., 0.999999*boxHeight]]))[0]
-q2 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0.999999*boxLength, 0.999999*boxHeight]]))[0]
-q3 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0.999999*boxLength, 0.]]))[0]
-q4 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0., 0.]]))[0]
+q1 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ_use.sym[0], np.array([[0., 0.999999*boxHeight]]))[0]
+q2 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ_use.sym[0], np.array([[0.999999*boxLength, 0.999999*boxHeight]]))[0]
+q3 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ_use.sym[0], np.array([[0.999999*boxLength, 0.]]))[0]
+q4 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ_use.sym[0], np.array([[0., 0.]]))[0]
 
-if(uw.mpi.rank==0):
+if uw.mpi.rank == 0:
     print('Rayleigh number = {0:.1e}'.format(Ra))
     print('q1 = {0:.3f}; q2 = {1:.3f}'.format(q1, q2))
     print('q3 = {0:.3f}; q4 = {1:.3f}'.format(q3, q4))
 
+# %% [markdown]
+# ### Calculate the stress for comparison with benchmark value
+# 
+# The stress field for whole box in dimensionless units (King 2009) is:
+# \begin{equation}
+# \tau_{ij} = \eta \frac{1}{2} \left[ \frac{\partial v_j}{\partial x_i} + \frac{\partial v_i}{\partial x_j}\right].
+# \end{equation}
+# For vertical normal stress it becomes:
+# \begin{equation}
+# \tau_{zz} = \eta \frac{1}{2} \left[ \frac{\partial v_z}{\partial z} + \frac{\partial v_z}{\partial z}\right] = \eta \frac{\partial v_z}{\partial z}.
+# \end{equation}
+# This is calculated below.
+
 # %%
 # projection for the stress in the zz direction
-x, y = meshbox.X
+x, y = meshbox_use.X
 
-stress_calc = uw.systems.Projection(meshbox, sigma_zz)
-stress_calc.uw_function = stokes.stress[1, 1]
+stress_calc = uw.systems.Projection(meshbox_use, sigma_zz_use)
+stress_calc.uw_function = sigma_zz_fn
 stress_calc.smoothing = 1.0e-3
 stress_calc.petsc_options.delValue("ksp_monitor")
-
-# %%
 stress_calc.solve()
 
-# %%
-# subtract the average value for the benchmark 
+# %% [markdown]
+# The vertical normal stress is dimensionalised as: 
+# 
+# $$
+#     \sigma_{t} = \frac{\eta_0 \kappa}{\rho g h^2}\tau _{zz} \left( x, z=h\right)
+# $$
+# 
+# where all constants are defined below. 
+# 
+# Finally, we calculate the topography defined using $h = \sigma_{top} / (\rho g)$. The topography of the top boundary calculated in the left and right corners as given in Table 9 of Blankenbach et al 1989 are:
+# 
+# | $Ra$          |    $\xi_1$  | $\xi_2$  |  $x$ ($\xi = 0$) |
+# | ------------- |:-----------:|:--------:|:--------------:|
+# | 10$^4$  | 2254.02   | -2903.23  | 0.539372          |
+# | 10$^5$  | 1460.99   | -2004.20  | 0.529330          |
+# | 10$^6$  | 931.96   | -1283.80  | 0.506490          |
 
-mean_sigma_zz_top = -surface_integral(meshbox, 
-                                     sigma_zz.sym[0], 
+# %%
+# subtract the average value for the benchmark since the mean is set to zero 
+
+mean_sigma_zz_top = -surface_integral(meshbox_use, 
+                                     sigma_zz_use.sym[0], 
                                      up_surface_defn_fn)/boxLength
 
-
-# %%
-print(mean_sigma_zz_top)
-print(boxLength)
 
 # %%
 # Set parameters in SI units
@@ -700,11 +863,9 @@ kappa  = 1.0e-6  # m^2.s^-1
 
 eta0=1.e23
 
-
-
 def calculate_topography(coord): # only coord has local scope
 
-    sigma_zz_top = -uw.function.evaluate(sigma_zz.sym[0], coord) - mean_sigma_zz_top
+    sigma_zz_top = -uw.function.evaluate(sigma_zz_use.sym[0], coord) - mean_sigma_zz_top
     
     # dimensionalise 
     dim_sigma_zz_top  = ((eta0 * kappa) / (height**2)) * sigma_zz_top
@@ -715,18 +876,22 @@ def calculate_topography(coord): # only coord has local scope
 
 
 # %%
+# topography at the top corners 
 e1 = calculate_topography(np.array([[0, 0.999999*boxHeight]]))
 e2 = calculate_topography(np.array([[0.999999*boxLength, 0.999999*boxHeight]]))
 
-with meshbox.access():
-    cond = meshbox.data[:, 1] == meshbox.data[:, 1].max()
-    up_surface_coords = meshbox.data[cond]
+# calculate the x-coordinate with zero stress
+with meshbox_use.access():
+    cond = meshbox_use.data[:, 1] == meshbox_use.data[:, 1].max()
+    up_surface_coords = meshbox_use.data[cond]
     up_surface_coords[:, 1] = 0.999999*up_surface_coords[:, 1]
 
 abs_topo = abs(calculate_topography(up_surface_coords))
 
 min_abs_topo_coord = up_surface_coords[np.where(abs_topo == abs_topo.min())[0]].flatten()
 
-print(e1, e2, min_abs_topo_coord)
+if uw.mpi.rank == 0:
+    print("Topography [x=0], [x=max] = {0:.2f}, {1:.2f}".format(e1[0], e2[0]))
+    print("x where topo = 0 is at {0:.6f}".format(min_abs_topo_coord[0]))
 
 
