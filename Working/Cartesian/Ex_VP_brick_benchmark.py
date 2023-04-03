@@ -70,20 +70,20 @@ BrickHeight = nd(400.*u.meter)
 BrickLength = nd(800.*u.meter)
 
 ### set the res in x and y
-resx = 160
-resy =  40
+resx = 100
+resy = 25
 
 ### add material index
 BrickIndex = 0
 BGIndex    = 1
 
 # +
-# mesh = uw.meshing.StructuredQuadBox(elementRes =(int(resx),int(resy)),
-#                                     minCoords=(xmin,ymin), 
-#                                     maxCoords=(xmax,ymax))
+mesh = uw.meshing.StructuredQuadBox(elementRes =(int(resx),int(resy)),
+                                    minCoords=(xmin,ymin), 
+                                    maxCoords=(xmax,ymax))
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin,ymin), 
-                                         maxCoords=(xmax,ymax), cellSize=0.03)
+# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin,ymin), 
+#                                          maxCoords=(xmax,ymax), cellSize=(1/resy))
 
 # +
 v_soln = uw.discretisation.MeshVariable(r"U", mesh, mesh.dim, degree=2)
@@ -154,9 +154,9 @@ if uw.mpi.size == 1:
     with swarm.access():
         point_cloud.point_data["M"] = material.data.copy()
 
-    pvmesh.point_data["eta"] = uw.function.evaluate(
-        material.sym[0], mesh.data, mesh.N
-    )
+    # pvmesh.point_data["eta"] = uw.function.evaluate(
+    #     material.sym[0], mesh.data, mesh.N
+    # )
 
     # pl.add_mesh(
     #     pvmesh,
@@ -203,12 +203,20 @@ stokes.constitutive_model.Parameters.viscosity = sympy.sympify(1)
 # Velocity boundary conditions
 vel = nd(2e-11 * u.meter / u.second)
 
-stokes.add_dirichlet_bc(vel, "Left", 0)
-stokes.add_dirichlet_bc(0, "Left", 1)
-stokes.add_dirichlet_bc(-vel, "Right", 0)
-stokes.add_dirichlet_bc(0, "Right", 1)
+### works for both kinds of boxes
+stokes.add_dirichlet_bc((vel,0), "Left", (0,1))
+
+stokes.add_dirichlet_bc((-vel,0), "Right", (0,1))
+
 stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
-# stokes.add_dirichlet_bc((0.0,), "Top", (1,))
+
+#### Only works for the unstructedQuadBox
+# stokes.add_dirichlet_bc(vel, "Left", 0)
+# stokes.add_dirichlet_bc(0, "Left", 1)
+# stokes.add_dirichlet_bc(-vel, "Right", 0)
+# stokes.add_dirichlet_bc(0, "Right", 1)
+# stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
+
 # -
 
 
@@ -269,8 +277,8 @@ def plotFig():
     points[:, 0] = mesh._centroids[:, 0]
     points[:, 1] = mesh._centroids[:, 1]
 
-    pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh.data)
-    pvmesh.point_data["str"] = uw.function.evaluate(stress.sym[0], mesh.data)
+    # pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh.data)
+    # pvmesh.point_data["str"] = uw.function.evaluate(stress.sym[0], mesh.data)
     # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh.data, mesh.N)
     
     # pvmesh.point_data["edot"] = uw.function.evaluate(edot.sym[0], mesh.data)
@@ -389,7 +397,7 @@ if uw.mpi.size ==1:
 tau_y = nd(1e8*u.pascal)
 viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
 
-# + jupyter={"outputs_hidden": true}
+# +
 visc_bg    = 1 / ((1/nd(1e25*u.pascal*u.second)) + (1./viscosity_Y))
 visc_brick = nd(1e20*u.pascal*u.second)
 
@@ -415,22 +423,22 @@ if uw.mpi.size ==1:
 # - (Takes much longer)
 
 # +
-# # visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
+# visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
 
-# visc_bg = sympy.Min(nd(1e25*u.pascal*u.second), viscosity_Y)
+visc_bg = sympy.Min(nd(1e25*u.pascal*u.second), viscosity_Y)
 
-# visc_brick = nd(1e20*u.pascal*u.second)
+visc_brick = nd(1e20*u.pascal*u.second)
 
-# viscosity = visc_brick * mat.sym[0] + \
-#             visc_bg    * mat.sym[1]
+viscosity = visc_brick * mat.sym[0] + \
+            visc_bg    * mat.sym[1]
 
-# stokes.constitutive_model.Parameters.viscosity = viscosity
-# stokes.saddle_preconditioner = 1 / viscosity
+stokes.constitutive_model.Parameters.viscosity = viscosity
+stokes.saddle_preconditioner = 1 / viscosity
 
-# stokes.penalty = 0.1
-# stokes.tolerance = 1e-6
+stokes.penalty = 0.1
+stokes.tolerance = 1e-6
 
-# stokes.solve(zero_init_guess=False)
+stokes.solve(zero_init_guess=False)
 # -
 
 
