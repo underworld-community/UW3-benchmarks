@@ -14,8 +14,6 @@ from mpi4py import MPI
 
 import os
 
-from underworld3.utilities import generateXdmf, swarm_h5, swarm_xdmf
-
 # %%
 options = PETSc.Options()
 
@@ -175,12 +173,10 @@ swarm     = uw.swarm.Swarm(mesh=mesh)
 # material  = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=False, proxy_degree=0)
 material  = uw.swarm.IndexSwarmVariable("material", swarm, indices=2)
 
-materialVariable      = swarm.add_variable(name="materialVariable", num_components=1, dtype=PETSc.RealType)
-
 swarm.populate(fill_param=2)
 
 # %%
-for i in [material, materialVariable]:
+for i in [material]:
         with swarm.access(i):
             i.data[:] = BGIndex
             i.data[(swarm.data[:,1] >= ndim((660-80) * u.kilometer))] = SlabIndex
@@ -260,10 +256,10 @@ nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.viscosity
 nodal_tau_inv2.smoothing = 0.
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
-matProj = uw.systems.Projection(mesh, materialField)
-matProj.uw_function = materialVariable.sym[0]
-matProj.smoothing = 0.
-matProj.petsc_options.delValue("ksp_monitor")
+# matProj = uw.systems.Projection(mesh, materialField)
+# matProj.uw_function = materialVariable.sym[0]
+# matProj.smoothing = 0.
+# matProj.petsc_options.delValue("ksp_monitor")
 
 
 ### create function to update fields
@@ -275,8 +271,8 @@ def updateFields(time):
     nodal_strain_rate_inv2.solve()
 
     
-    matProj.uw_function = materialVariable.sym[0] 
-    matProj.solve(_force_setup=True)
+    # matProj.uw_function = materialVariable.sym[0] 
+    # matProj.solve(_force_setup=True)
 
 
     nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
@@ -366,6 +362,7 @@ stokes.add_dirichlet_bc( sol_vel, ["Top", "Bottom"],  [1] )  # top/bottom: compo
 # ### Add a passive tracer(s)
 
 # %%
+
 y = np.linspace(nd((660-80)*u.kilometer), nd((660-330)*u.kilometer), 10)
 
 x0 = np.zeros_like(y) + nd((500-40)*u.kilometer)
@@ -373,6 +370,8 @@ x0 = np.zeros_like(y) + nd((500-40)*u.kilometer)
 x1 = np.zeros_like(y) + nd((500+40)*u.kilometer)
 
 tracers = np.concatenate( (np.vstack([x0,y]).T, np.vstack([x1,y]).T) )
+
+# %%
 
 # %%
 ### add a tracer
@@ -383,7 +382,7 @@ tracers = np.concatenate( (np.vstack([x0,y]).T, np.vstack([x1,y]).T) )
 # %%
 passiveSwarm = uw.swarm.Swarm(mesh)
 
-passiveSwarm.add_particles_with_coordinates(tracers)
+passiveSwarm.add_particles_with_coordinates(np.ascontiguousarray(tracers))
 
 # %% [markdown]
 # #### Visualise swarm and passive tracers
@@ -495,55 +494,45 @@ densityBG     = nd(3150* u.kilogram / u.metre**3)
 densitySlab   = nd(3300* u.kilogram / u.metre**3)
 
 # %%
-mat_density = np.array([densityBG,densitySlab])
+density_fn = material.createMask([densityBG, densitySlab])
 
-density = mat_density[0] * material.sym[0] + \
-          mat_density[1] * material.sym[1]
+# %%
 
-stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density])
+
+stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density_fn])
 
 # %% [markdown]
-# ### Create figure function
+# ### set some petsc options
 
 # %%
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
 
-# stokes.tolerance = 1.0e-6
+stokes.tolerance = 1.0e-6
 
-### snes_atol and ksp_atol has to be >= to viscosity contrast
-stokes.petsc_options["snes_atol"] = 1e-6
-
-stokes.petsc_options["ksp_atol"] = 1e-6
 
 
 # %% [markdown]
 # ### Initial linear solve
 
 # %%
-### linear solve
-stokes.constitutive_model.Parameters.viscosity = nd(1e21*u.pascal*u.second)
-stokes.saddle_preconditioner = 1.0 / nd(1e21*u.pascal*u.second)
-stokes.solve(zero_init_guess=True)
+# ### linear solve
+# stokes.constitutive_model.Parameters.viscosity = nd(1e21*u.pascal*u.second)
+# stokes.saddle_preconditioner = 1.0 / nd(1e21*u.pascal*u.second)
+# stokes.solve(zero_init_guess=True)
 
-
-# %% [markdown]
-# #### Another linear solve
-#
-# - This solve speeds up the first NL solve, but also produces a longer first initial timestep.
-# - Probably best to leave it out as it does not fully capture the NL velocity initially
 
 # %%
 ### linear solve
 
-mat_viscosity = np.array([nd(1e21*u.pascal*u.second), nd(1e24*u.pascal*u.second)])
-
-viscosityMat = mat_viscosity[0] * material.sym[0] + \
-               mat_viscosity[1] * material.sym[1] 
+viscosity_L_fn = material.createMask([nd(1e21*u.pascal*u.second),
+                                      nd(1e24*u.pascal*u.second)])
 
 
-stokes.constitutive_model.Parameters.viscosity = viscosityMat
-stokes.saddle_preconditioner = 1.0 / viscosityMat
+
+
+stokes.constitutive_model.Parameters.viscosity = viscosity_L_fn
+stokes.saddle_preconditioner = 1.0 / viscosity_L_fn
 stokes.solve(zero_init_guess=False)
 
 # %% [markdown]
@@ -567,11 +556,10 @@ else:
     NL_slab       = viscSlab * (stokes._Einv2)
 
 
+viscosity_mat_fn = material.createMask([viscBG,
+                                       NL_slab])
+    
 
-mat_viscosity = np.array([viscBG, NL_slab])
-
-viscosityMat = mat_viscosity[0] * material.sym[0] + \
-               mat_viscosity[1] * material.sym[1] 
 
 # %% [markdown]
 # ##### Viscosity is limited betweeen 10$^{21}$ and 10$^{25}$ Pa S
@@ -579,10 +567,11 @@ viscosityMat = mat_viscosity[0] * material.sym[0] + \
 # %%
 # ### add in material-based viscosity
 
-viscosity = sympy.Max(sympy.Min(viscosityMat, nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
+viscosity_NL_fn = sympy.Max(sympy.Min(viscosity_mat_fn, nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
 
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.saddle_preconditioner = 1.0 / viscosity
+stokes.constitutive_model.Parameters.viscosity = viscosity_NL_fn
+stokes.saddle_preconditioner = 1.0 / viscosity_NL_fn
+
 
 
 # %% [markdown]
@@ -600,28 +589,14 @@ def saveData(step, outputPath, time):
     viewer(mesh.dm)
 
     ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
-    viewer(stokes.u._gvec)         # add velocity
-    viewer(stokes.p._gvec)         # add pressure
-    viewer(strain_rate_inv2._gvec) # add strain rate
-    viewer(node_viscosity._gvec)   # add viscosity
-    viewer(materialField._gvec)    # add material projection
-    viewer(timeField._gvec)        # add time
-    viewer.destroy()              
-    generateXdmf(fname, xfname)
+    mesh.petsc_save_checkpoint(index=step, meshVars=[stokes.u, stokes.p, strain_rate_inv2,
+                                                node_viscosity, timeField])
     
-    ### save all swarm variables attached to DM
-    #x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
-    #swarm.dm.viewXDMF(x_swarm_fname)
     
     #### save the swarm and selected variables
-    swarmFields = [material, ]
-    swarm_h5(swarm=swarm, fileName='swarm', fields=swarmFields, timestep=step, outputPath=outputPath)
-    swarm_xdmf(fields=swarmFields, fileName='swarm', timestep=step, outputPath=outputPath)
+    swarm.petsc_save_checkpoint('swarm', step, outputPath)
     
-    ### save passive swarm
-    PTFields = None
-    swarm_h5(swarm=passiveSwarm, fileName='PT', fields=PTFields, timestep=step, outputPath=outputPath)
-    swarm_xdmf(fields=PTFields, fileName='PT', timestep=step, outputPath=outputPath)
+    passiveSwarm.petsc_save_checkpoint('PT', step, outputPath)
     
 
 
