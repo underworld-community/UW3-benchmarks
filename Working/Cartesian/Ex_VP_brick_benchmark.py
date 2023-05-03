@@ -358,6 +358,8 @@ stokes.petsc_options["ksp_monitor"] = None
 stokes.petsc_options['pc_type'] = 'lu'
 
 # +
+stokes.petsc_options['pc_type'] = 'lu'
+
 stokes.petsc_options["snes_max_it"] = 500
 
 stokes.petsc_options["snes_atol"] = 1e-6

@@ -329,15 +329,17 @@ scaling_coefficients["[temperature]"]= KT
 scaling_coefficients
 # -
 
+ref_SR = dim(1, 1/u.second).m
+
 # #### Add in a swarm
 
 # +
 swarm = uw.swarm.Swarm(mesh=mesh1)
-material = uw.swarm.SwarmVariable(
-    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=0)
+mat = uw.swarm.SwarmVariable(
+    "mat", swarm, size=1, proxy_continuous=False, proxy_degree=2)
 
-mat = uw.swarm.IndexSwarmVariable(
-    'mat', swarm, indices=2, proxy_degree=0)
+material = uw.swarm.IndexSwarmVariable(
+    'M', swarm, indices=2, proxy_degree=0, proxy_continuous=False)
 
 ### This produces particles at the centre of cells
 swarm.populate(fill_param=0)
@@ -351,16 +353,17 @@ indexSetW = mesh1.dm.getStratumIS("Weak", 100)
 indexSetS = mesh1.dm.getStratumIS("Strong", 101)
 
 
-l = swarm.dm.createLocalVectorFromField("M")
+l = swarm.dm.createLocalVectorFromField("mat")
 lvec = l.copy()
-swarm.dm.restoreField("M")
+swarm.dm.restoreField("mat")
 
-lvec.isset(indexSetW, 0.0)
-lvec.isset(indexSetS, 1.0)
+lvec.isset(indexSetW, 0)
+lvec.isset(indexSetS, 1)
 
 with swarm.access(material, mat):
     material.data[:, 0] = lvec.array[:]
     mat.data[:, 0] = lvec.array[:]
+    print(np.unique(lvec))
 
 # check the mesh and material mapping if in a notebook / serial
 
@@ -430,21 +433,18 @@ stokes = uw.systems.Stokes(
 )
 
 
-# +
-### produces a value of 1 at the base (1e21) and 1000 at the top (1e24)
-
-# viscosity_L = 999.0 * material.sym[0] + 1.0
-
-# dim(np.unique(uw.function.evaluate(viscosity_L, mesh1.data)), u.pascal*u.second)
-# -
-
 # ##### Setup a linear viscosity
 
-viscosity_L = nd(1e21*u.pascal*u.second) * mat.sym[0] + \
-              nd(1e24*u.pascal*u.second) * mat.sym[1] 
+viscosity_fn_L = material.createMask([nd(1e21*u.pascal*u.second), 
+                                     nd(1e24*u.pascal*u.second)])
+
+# +
 
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
-stokes.constitutive_model.Parameters.viscosity = viscosity_L
+# stokes.constitutive_model.Parameters.viscosity = viscosity_L
+# -
+
+stokes.constitutive_model.Parameters.viscosity = viscosity_fn_L
 
 # #### Boundary conditions
 
@@ -545,12 +545,12 @@ def plotFig():
 
     pl.add_mesh(
         pvmesh,
-        cmap="RdYlGn",
+        cmap="jet",
         scalars="edot",
         edge_color="Grey",
         show_edges=True,
         use_transparency=False,
-        # clim=[0.1, 1.5],
+        # clim=[0, 10],
         opacity=1.0,
         log_scale=True
     )
@@ -577,43 +577,50 @@ def plotFig():
 # +
 stokes.petsc_options["ksp_monitor"] = None
 
-# # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
-# # stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
-# stokes.petsc_options[
-#     "fieldsplit_pressure_pc_type"
-# ] = "gamg"  # can use gasm / gamg / lu here
-# stokes.petsc_options[
-#     "fieldsplit_pressure_pc_gasm_type"
-# ] = "basic"  # can use gasm / gamg / lu here
-# stokes.petsc_options[
-#     "fieldsplit_pressure_pc_gamg_type"
-# ] = "classical"  # can use gasm / gamg / lu here
-# stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
-# stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
-
-
-stokes.petsc_options['pc_type'] = 'lu'
+if uw.mpi.size == 1:
+    stokes.petsc_options['pc_type'] = 'lu'
 
 # +
 stokes.petsc_options["snes_max_it"] = 500
 
-stokes.petsc_options["snes_atol"] = 1e-6
-stokes.petsc_options["snes_rtol"] = 1e-6
+stokes.petsc_options.setValue("snes_max_it", 500)
+
+# stokes.petsc_options["snes_atol"] = 1e-6
+# stokes.petsc_options["snes_rtol"] = 1e-20
+# stokes.petsc_options['ksp_rtol'] = 1e-20
 # -
 
 # #### Initial linear solve
 
 # +
+visc_top    = nd(1e24*u.pascal*u.second)
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+
+viscosity_fn_L = material.createMask([visc_bottom, 
+                                      visc_top])
+
+stokes.constitutive_model.Parameters.viscosity = viscosity_fn_L
+
+stokes.constitutive_model.Parameters.viscosity
+# -
+
+### sets the relative tolerance
+stokes.tolerance = 1e-8
+
+
+# +
 # First, we solve the linear problem
-stokes.constitutive_model.Parameters.viscosity = viscosity_L
-stokes.saddle_preconditioner = 1 / viscosity_L
+
+
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 
 # stokes.penalty = 0.1
-# stokes.tolerance = 1e-6
 
 
-stokes.solve(zero_init_guess=True)
+
+stokes.solve(zero_init_guess=True, picard=0)
 
 if uw.mpi.rank == 0:
     print("Linear solve complete", flush=True)
@@ -626,9 +633,15 @@ if uw.mpi.size ==1:
 # #### Add in VP material
 # - Using the harmonic mean method
 # - Uses the linear solve as the starting point
+#
+# - First solve in von Mises only
+
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 
 # +
-tau_y = nd(1e8*u.pascal)
+nd_C = nd(1e8*u.pascal)
+
+tau_y = nd_C
 
 viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
 
@@ -636,46 +649,76 @@ visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
 
 visc_bottom = nd(1e21*u.pascal*u.second)
 
-viscosity = visc_bottom * mat.sym[0] + \
-            visc_top    * mat.sym[1]
+
+viscosity_fn_NL = material.createMask([visc_bottom, 
+                                      visc_top])
+
+
+# -
+
+stokes.constitutive_model.Parameters.viscosity = viscosity_fn_NL
 
 # +
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.saddle_preconditioner = 1 / viscosity
+# stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
+
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 # stokes.penalty = 0.1
 # stokes.tolerance = 1e-6
 
-stokes.solve(zero_init_guess=False)
+stokes.solve(zero_init_guess=False, picard=0)
 # -
 
 
 if uw.mpi.size ==1:
     plotFig()
 
-# #### Another VP solve
-# - This uses the minimum method
-# - Uses the harmonic mean solve as the starting point
-# - (Takes longer)
+# ### Add in depth depedency
+# - Depth-dependent von Mises (lithostatic pressure only)
 
 # +
-# visc_top = sympy.Min(nd(1e24*u.pascal*u.second), viscosity_Y)
+nd_C = nd(1e8*u.pascal)
 
-# visc_bottom = nd(1e21*u.pascal*u.second)
-
-# viscosity = visc_bottom * mat.sym[0] + \
-#             visc_top    * mat.sym[1]
+phi = 30 ### in degrees
+fc = np.sin(np.deg2rad(phi))
 
 # +
-# stokes.constitutive_model.Parameters.viscosity = viscosity
-# stokes.saddle_preconditioner = 1 / viscosity
+nd_C = nd(1e8*u.pascal)
 
-# # stokes.penalty = 0.1
-# # stokes.tolerance = 1e-6
+### lithoP = Rho0 * g * h
+nd_lithoP = nd_density * nd_gravity * -1*mesh1.X[1] #### 0 to -1 in depth
+
+tau_y = nd_C * np.cos(np.deg2rad(phi)) + (fc * nd_lithoP)
+
+viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
+
+visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
+
+visc_bottom = nd(1e21*u.pascal*u.second)
 
 
-# stokes.solve(zero_init_guess=False)
+viscosity_fn_NL = material.createMask([visc_bottom, 
+                                      visc_top])
+
+stokes.constitutive_model.Parameters.viscosity = viscosity_fn_NL
+
+
+# +
+max_lithoP = (10e3*9.81*2.7e3)/1e6
+
+model_max_lithoP = (dim(uw.function.evaluate(nd_lithoP, mesh1.data, mesh1.N), u.megapascal).m).max()
+
+#### check if lithostatic pressure is scaled correctly
+np.isclose(max_lithoP, model_max_lithoP)
+
+# +
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+
+
+stokes.solve(zero_init_guess=False, picard=0)
 # -
 
 if uw.mpi.size ==1:
     plotFig()
+
+

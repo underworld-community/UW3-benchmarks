@@ -27,13 +27,11 @@ from underworld3.systems import Stokes
 import numpy as np
 import sympy
 from mpi4py import MPI
+import os
 
 
 import pyvista as pv
 import vtk
-
-sys = PETSc.Sys()
-sys.pushErrorHandler("traceback")
 
 # +
 #### visualisation within script
@@ -44,12 +42,22 @@ save_output = False
 # -
 
 ### number of steps for the model
-nstep = 2
+nstep = 21
 
+### stokes tolerance
 tol = 1e-5
 
-expt_name = f"output/stinker_eta1e6_rho10"
+# +
+#### output folder name
+outputPath = f"output/stinker_eta1e6_rho10/"
 
+if uw.mpi.rank==0:      
+    ### create folder if not run before
+    if not os.path.exists(outputPath):
+        os.makedirs(outputPath)
+# -
+
+### resolution of the model
 res = 80
 
 # Set size and position of dense sphere.
@@ -87,35 +95,25 @@ mesh = uw.meshing.StructuredQuadBox(minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0),
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 p = uw.discretisation.MeshVariable("P", mesh, 1, degree=1)
 
-stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p, verbose=True)
+stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p)
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh.dim)
 
 
 # +
-### No slip BC
-sol_vel = sympy.Matrix([0, 0])
-stokes.add_dirichlet_bc(
-    sol_vel, ["Top", "Bottom"], [0, 1]
-)  # top/bottom: components, function, markers
-stokes.add_dirichlet_bc(
-    sol_vel, ["Left", "Right"], [0, 1]
-)  # left/right: components, function, markers
-
 ### free slip BC
 
-# stokes.add_dirichlet_bc(
-#     sol_vel, ["Top", "Bottom"], [1]
-# )  # top/bottom: components, function, markers
-# stokes.add_dirichlet_bc(
-#     sol_vel, ["Left", "Right"], [0]
-# )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( (0.,0.), 'Left',   (0) ) # left/right: function, boundaries, components
+stokes.add_dirichlet_bc( (0.,0.), 'Right',  (0) )
+
+stokes.add_dirichlet_bc( (0.,0.), 'Top',    (1) )
+stokes.add_dirichlet_bc( (0.,0.), 'Bottom', (1) )# top/bottom: function, boundaries, components 
 # -
 
 
 # ####  Add a particle swarm which is used to track material properties 
 
 swarm = uw.swarm.Swarm(mesh=mesh)
-material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=True)
+material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2)
 swarm.populate(fill_param=4)
 
 # Create an array which contains:
@@ -139,26 +137,20 @@ with swarm.access(material):
         material.data[inside] = m
 
 ### add tracer for sinker velocity
-tracer = np.zeros(shape=(1, 2))
-tracer[:, 0], tracer[:, 1] = x_pos, y_pos
+tracer_coords = np.zeros(shape=(1, 2))
+tracer_coords[:, 0], tracer_coords[:, 1] = x_pos, y_pos
 
-# +
-### assign the density of each material
+tracer = uw.swarm.Swarm(mesh=mesh)
 
-mat_density = np.array([densityBG, densitySphere])
+tracer.add_particles_with_coordinates(tracer_coords)
 
-density = mat_density[0] * material.sym[0] + mat_density[1] * material.sym[1]
-
-
+density_fn = material.createMask([densityBG, densitySphere])
 
 # +
 ### assign material viscosity
 
-mat_viscosity = np.array([viscBG, viscSphere])
+viscosity_fn = material.createMask([viscBG, viscSphere])
 
-viscosityMat = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
-
-viscosity = viscosityMat
 # -
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
@@ -168,72 +160,46 @@ pv.global_theme.smooth_shading = True
 pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
-pl = pv.Plotter(notebook=True)
+stokes.constitutive_model.Parameters.viscosity = viscosity_fn
+stokes.bodyforce = sympy.Matrix([0, -1 * density_fn])
+stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
 
 
-def plot_T_mesh(filename):
-
-    if not render:
-        return
-
-    mesh.vtk("tmpMsh.vtk")
-    pvmesh = pv.read("tmpMsh.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0], 3))
-        points[:, 0] = swarm.data[:, 0]
-        points[:, 1] = swarm.data[:, 1]
-        points[:, 2] = 0.0
-
-    point_cloud = pv.PolyData(points)
-
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
-
-    ## Plotting into existing pl (memory leak in panel code)
-    pl.clear()
-
-    pl.add_mesh(pvmesh, "Black", "wireframe")
-
-    pl.add_points(
-        point_cloud,
-        cmap="coolwarm",
-        render_points_as_spheres=False,
-        point_size=10,
-        opacity=0.5,
-    )
-
-    pl.screenshot(
-        filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False
-    )
-
-
-stokes.constitutive_model.Parameters.viscosity = viscosity
-stokes.bodyforce = sympy.Matrix([0, -1 * density])
-stokes.saddle_preconditioner = 1.0 / viscosity
-
-
-stokes.petsc_options["snes_converged_reason"] = None
-stokes.petsc_options["snes_rtol"] = tol
-stokes.petsc_options["ksp_rtol"]  = tol
+stokes.tolerance = tol
 
 step = 0
 time = 0.0
-nprint = 0.0
 
 tSinker = np.zeros(nsteps)*np.nan
 ySinker = np.zeros(nsteps)*np.nan
+
+if uw.mpi.size == 1:
+    stokes.petsc_options['pc_type'] = 'lu'
 
 # #### Stokes solver loop
 
 while step < nstep:
     ### Get the position of the sinking ball
-    ymin = tracer[:, 1].min()
+    with tracer.access():
+        ymin = tracer.data[:,1].min()
+        
     ySinker[step] = ymin
     tSinker[step] = time
+    
+    ### print some stuff
+    if uw.mpi.rank == 0:
+        print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
+        
+    if step % 10 == 0:
+        mesh.petsc_save_checkpoint(meshVars=[v, p,], index=step, outputPath=outputPath)
+        swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=outputPath)
+        tracer.petsc_save_checkpoint(swarmName='tracer', index=step, outputPath=outputPath)
+            
+    
 
     ### solve stokes
     stokes.solve(zero_init_guess=True)
+    
     ### estimate dt
     dt = stokes.estimate_dt()
 
@@ -242,15 +208,9 @@ while step < nstep:
 
 
     ### advect tracer
-    vel_on_tracer = uw.function.evaluate(stokes.u.fn, tracer)
-    tracer += dt * vel_on_tracer
+    tracer.advection(stokes.u.sym, dt, corrector=False)
 
-    ### print some stuff
-    if uw.mpi.rank == 0:
-        print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
-        
-        if save_output == True:
-            plot_T_mesh(filename="{}_step_{}".format(expt_name, step))
+
 
     step += 1
     time += dt
@@ -278,6 +238,7 @@ if uw.mpi.rank==0:
     velocity = (ySinker[0] - ySinker[-1]) / (tSinker[-1] - tSinker[0])
     print(f'Velocity:         v = {velocity}')
 
+if uw.mpi.size==1:    
     import matplotlib.pyplot as pyplot
 
     fig = pyplot.figure()
@@ -287,8 +248,11 @@ if uw.mpi.rank==0:
     
     ax.plot(t_benchmark, v_benchmark, ls='--', label='benchmark velocity') 
     
+    ax.legend()
+    
     ax.set_xlabel('Time')
     ax.set_ylabel('Sinker position')
+
 
 if uw.mpi.size == 1:
 
@@ -304,8 +268,7 @@ if uw.mpi.size == 1:
 
     # pv.start_xvfb()
 
-    mesh.vtk("tmpMsh.vtk")
-    pvmesh = pv.read("tmpMsh.vtk")
+    pvmesh = pv.read(outputPath +"tmpMsh.vtk")
 
     # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 
@@ -333,7 +296,7 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(pvmesh, "Black", "wireframe")
 
-    pvmesh.point_data["rho"] = uw.function.evaluate(density, mesh.data)
+    pvmesh.point_data["rho"] = uw.function.evaluate(density_fn, mesh.data)
 
     # pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="rho",
     #                 use_transparency=False, opacity=0.95)

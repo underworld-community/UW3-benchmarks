@@ -12,3 +12,4 @@ Working/Cartesian/*/*
 *.xmf
 WIP/Annulus/Annulus_meshes.py
 WIP/Annulus/Ex_Convection_Cylinder-VP_FAC.py
+*.pbin
