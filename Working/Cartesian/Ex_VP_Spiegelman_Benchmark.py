@@ -639,6 +639,7 @@ if uw.mpi.size ==1:
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
 
 # +
+### top
 nd_C = nd(1e8*u.pascal)
 
 tau_y = nd_C
@@ -647,6 +648,8 @@ viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
 
 visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
 
+
+### bottom
 visc_bottom = nd(1e21*u.pascal*u.second)
 
 
@@ -693,6 +696,8 @@ tau_y = nd_C * np.cos(np.deg2rad(phi)) + (fc * nd_lithoP)
 viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
 
 visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
+
+
 
 visc_bottom = nd(1e21*u.pascal*u.second)
 

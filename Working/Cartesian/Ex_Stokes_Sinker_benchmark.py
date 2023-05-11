@@ -49,7 +49,7 @@ tol = 1e-5
 
 # +
 #### output folder name
-outputPath = f"output/stinker_eta1e6_rho10/"
+outputPath = f"output/sinker_eta1e6_rho10/"
 
 if uw.mpi.rank==0:      
     ### create folder if not run before
@@ -80,7 +80,7 @@ densitySphere = 10.0
 x_pos = sphereCentre[0]
 y_pos = sphereCentre[1] - sphereRadius
 
-nsteps = 10
+nsteps = 11
 
 # +
 # mesh = uw.meshing.UnstructuredSimplexBox(
@@ -146,12 +146,16 @@ tracer.add_particles_with_coordinates(tracer_coords)
 
 density_fn = material.createMask([densityBG, densitySphere])
 
+density_fn
+
 # +
 ### assign material viscosity
 
 viscosity_fn = material.createMask([viscBG, viscSphere])
 
 # -
+viscosity_fn
+
 pv.global_theme.background = "white"
 pv.global_theme.window_size = [750, 750]
 pv.global_theme.antialiasing = True
@@ -173,8 +177,14 @@ time = 0.0
 tSinker = np.zeros(nsteps)*np.nan
 ySinker = np.zeros(nsteps)*np.nan
 
+v.sym[1]
+
+p.sym
+
 if uw.mpi.size == 1:
     stokes.petsc_options['pc_type'] = 'lu'
+
+stokes.petsc_options.view()
 
 # #### Stokes solver loop
 
@@ -189,11 +199,6 @@ while step < nstep:
     ### print some stuff
     if uw.mpi.rank == 0:
         print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
-        
-    if step % 10 == 0:
-        mesh.petsc_save_checkpoint(meshVars=[v, p,], index=step, outputPath=outputPath)
-        swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=outputPath)
-        tracer.petsc_save_checkpoint(swarmName='tracer', index=step, outputPath=outputPath)
             
     
 
@@ -215,6 +220,10 @@ while step < nstep:
     step += 1
     time += dt
 
+
+mesh.petsc_save_checkpoint(meshVars=[v, p,], index=step, outputPath=outputPath)
+swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=outputPath)
+tracer.petsc_save_checkpoint(swarmName='tracer', index=step, outputPath=outputPath)
 
 stokesSink_vel = (((2*sphereRadius)**2)*(densitySphere - densityBG)*1)/18*viscBG
 print(f'stokes sinking velocity: {stokesSink_vel}')
@@ -244,9 +253,9 @@ if uw.mpi.size==1:
     fig = pyplot.figure()
     fig.set_size_inches(12, 6)
     ax = fig.add_subplot(1,1,1)
-    ax.plot(tSinker, ySinker, label='UW sinker velocity') 
+    ax.plot(tSinker, ySinker, label='UW sinker') 
     
-    ax.plot(t_benchmark, v_benchmark, ls='--', label='benchmark velocity') 
+    ax.plot(t_benchmark, v_benchmark, ls='--', label='benchmark') 
     
     ax.legend()
     
@@ -267,7 +276,7 @@ if uw.mpi.size == 1:
     pv.global_theme.smooth_shading = True
 
     # pv.start_xvfb()
-
+    mesh.vtk(outputPath +"tmpMsh.vtk")
     pvmesh = pv.read(outputPath +"tmpMsh.vtk")
 
     # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)

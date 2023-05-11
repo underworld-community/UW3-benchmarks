@@ -38,7 +38,7 @@ linear = False ### False for NL version
 
 # %%
 ## number of steps
-nsteps = 101
+nsteps = 11
 
 ## swarm gauss point count (particle distribution)
 swarmGPC = 2
@@ -589,8 +589,9 @@ def saveData(step, outputPath, time):
     viewer(mesh.dm)
 
     ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
-    mesh.petsc_save_checkpoint(index=step, meshVars=[stokes.u, stokes.p, strain_rate_inv2,
-                                                node_viscosity, timeField])
+    mesh.petsc_save_checkpoint(index=step, 
+                               meshVars=[v, p, strain_rate_inv2,node_viscosity, timeField], 
+                                outputPath=outputPath)
     
     
     #### save the swarm and selected variables
