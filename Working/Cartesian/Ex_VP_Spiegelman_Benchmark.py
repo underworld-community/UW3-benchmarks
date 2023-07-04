@@ -48,7 +48,7 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 3
+problem_size = 2
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -433,18 +433,9 @@ stokes = uw.systems.Stokes(
 )
 
 
-# ##### Setup a linear viscosity
+# ##### Setup the constitutive model
 
-viscosity_fn_L = material.createMask([nd(1e21*u.pascal*u.second), 
-                                     nd(1e24*u.pascal*u.second)])
-
-# +
-
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
-# stokes.constitutive_model.Parameters.viscosity = viscosity_L
-# -
-
-stokes.constitutive_model.Parameters.viscosity = viscosity_fn_L
+stokes.constitutive_model = uw.systems.constitutive_models.ViscoPlasticFlowModel(mesh1.dim)
 
 # #### Boundary conditions
 
@@ -555,10 +546,10 @@ def plotFig():
         log_scale=True
     )
     
-    pl.add_scalar_bar('edot', interactive=True, vertical=False,
-                           title_font_size=35,
-                           label_font_size=30,
-                           outline=True, fmt='%10.5f')
+    # pl.add_scalar_bar('edot', interactive=True, vertical=False,
+    #                        title_font_size=35,
+    #                        label_font_size=30,
+    #                        outline=True, fmt='%10.5f')
 
     # pl.add_points(
     #     point_cloud,
@@ -585,29 +576,22 @@ stokes.petsc_options["snes_max_it"] = 500
 
 stokes.petsc_options.setValue("snes_max_it", 500)
 
-# stokes.petsc_options["snes_atol"] = 1e-6
-# stokes.petsc_options["snes_rtol"] = 1e-20
-# stokes.petsc_options['ksp_rtol'] = 1e-20
+### sets the relative tolerance
+stokes.tolerance = 1e-12
 # -
 
 # #### Initial linear solve
 
 # +
+### background viscosities
 visc_top    = nd(1e24*u.pascal*u.second)
 
 visc_bottom = nd(1e21*u.pascal*u.second)
-
-viscosity_fn_L = material.createMask([visc_bottom, 
-                                      visc_top])
-
-stokes.constitutive_model.Parameters.viscosity = viscosity_fn_L
-
-stokes.constitutive_model.Parameters.viscosity
 # -
 
-### sets the relative tolerance
-stokes.tolerance = 1e-8
-
+stokes.constitutive_model.Parameters.materialIndex = material
+stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
+stokes.constitutive_model.Parameters.viscosity
 
 # +
 # First, we solve the linear problem
@@ -627,7 +611,7 @@ if uw.mpi.rank == 0:
 # -
 
 
-if uw.mpi.size ==1:
+if uw.mpi.size == 1:
     plotFig()
 
 # #### Add in VP material
@@ -636,38 +620,32 @@ if uw.mpi.size ==1:
 #
 # - First solve in von Mises only
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
-
 # +
 ### top
 nd_C = nd(1e8*u.pascal)
 
 tau_y = nd_C
 
-viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
+### background viscosities
+visc_top = nd(1e24*u.pascal*u.second)
 
-visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
-
-
-### bottom
 visc_bottom = nd(1e21*u.pascal*u.second)
-
-
-viscosity_fn_NL = material.createMask([visc_bottom, 
-                                      visc_top])
 
 
 # -
 
-stokes.constitutive_model.Parameters.viscosity = viscosity_fn_NL
+stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
+stokes.constitutive_model.Parameters.yield_stress = [0, tau_y] 
+stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
+stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
+stokes.constitutive_model.Parameters.averaging_method = 'HA'
+stokes.constitutive_model.Parameters.viscosity
 
-# +
+# + jupyter={"outputs_hidden": true}
 # stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
 
 stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
-# stokes.penalty = 0.1
-# stokes.tolerance = 1e-6
 
 stokes.solve(zero_init_guess=False, picard=0)
 # -
@@ -675,6 +653,20 @@ stokes.solve(zero_init_guess=False, picard=0)
 
 if uw.mpi.size ==1:
     plotFig()
+
+# #### Same solve
+# but using the minimum method to determine the viscosity
+# - This shows that the HA is 'easier' to solve, as per the paper
+
+stokes.constitutive_model.Parameters.averaging_method = 'min'
+stokes.constitutive_model.Parameters.viscosity
+
+# +
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+
+
+stokes.solve(zero_init_guess=False, picard=0)
+# -
 
 # ### Add in depth depedency
 # - Depth-dependent von Mises (lithostatic pressure only)
@@ -685,28 +677,23 @@ nd_C = nd(1e8*u.pascal)
 phi = 30 ### in degrees
 fc = np.sin(np.deg2rad(phi))
 
-# +
-nd_C = nd(1e8*u.pascal)
+visc_bottom = nd(1e21*u.pascal*u.second)
+visc_top    = nd(1e24*u.pascal*u.second)
 
+# +
 ### lithoP = Rho0 * g * h
 nd_lithoP = nd_density * nd_gravity * -1*mesh1.X[1] #### 0 to -1 in depth
 
-tau_y = nd_C * np.cos(np.deg2rad(phi)) + (fc * nd_lithoP)
-
-viscosity_Y = (tau_y / (2 * stokes._Einv2 + 1.0e-18))
-
-visc_top = 1 / ((1/nd(1e24*u.pascal*u.second)) + (1./viscosity_Y))
+tau_y_dd_vm = nd_C * np.cos(np.deg2rad(phi)) + (fc * nd_lithoP)
+# -
 
 
-
-visc_bottom = nd(1e21*u.pascal*u.second)
-
-
-viscosity_fn_NL = material.createMask([visc_bottom, 
-                                      visc_top])
-
-stokes.constitutive_model.Parameters.viscosity = viscosity_fn_NL
-
+stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
+stokes.constitutive_model.Parameters.yield_stress = [0, tau_y_dd_vm] 
+stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
+stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
+stokes.constitutive_model.Parameters.averaging_method = 'HA'
+stokes.constitutive_model.Parameters.viscosity
 
 # +
 max_lithoP = (10e3*9.81*2.7e3)/1e6
@@ -725,5 +712,45 @@ stokes.solve(zero_init_guess=False, picard=0)
 
 if uw.mpi.size ==1:
     plotFig()
+
+# ### Now try the full Drucker-Prager yielding term
+# - Depth-dependent von Mises
+# - And the dynamic pressure term from the solve
+
+# +
+nd_C = nd(1e8*u.pascal)
+
+phi = 30 ### in degrees
+fc = np.sin(np.deg2rad(phi))
+
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+visc_top    = nd(1e24*u.pascal*u.second)
+
+### lithoP = Rho0 * g * h
+nd_lithoP = nd_density * nd_gravity * -1*mesh1.X[1] #### 0 to -1 in depth
+
+tau_y_dd_dp = nd_C * np.cos(np.deg2rad(phi)) + ( (fc * nd_lithoP) + p_soln.sym[0] )
+# -
+
+stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
+stokes.constitutive_model.Parameters.yield_stress = [0, tau_y_dd_dp] 
+stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
+stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
+stokes.constitutive_model.Parameters.averaging_method = 'HA'
+stokes.constitutive_model.Parameters.viscosity
+
+# +
+# stokes.petsc_options['pc_type'] = 'fieldsplit'
+# ### 'lu' doesn't solve with the pressure field included in the yielding equation
+
+# +
+stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+
+
+stokes.solve(picard=0, zero_init_guess=False)
+# -
+
+
 
 

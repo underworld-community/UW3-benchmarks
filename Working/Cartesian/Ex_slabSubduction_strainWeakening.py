@@ -374,61 +374,6 @@ def material_weakening_piecewise(strain_var, val1, val2, epsilon1, epsilon2):
 
 
 # %%
-def mat_strength_change(strain_var, val1, val2, epsilon1, epsilon2):
-    '''
-    can produce values that either decrease or increase between val0 and val1 between epsilon1 and epsilon2
-    '''
-    delta_epsilon = epsilon1 - epsilon2
-
-    delta_val = val1 - val2
-
-
-    val = delta_val * (0.5 + (0.5 * sympy.cos((strain_var.sym[0]-epsilon1)*(sympy.pi/delta_epsilon)))) + val2
-
-
-
-    return val
-
-# %%
-#### Testing strength change based on strain function
-
-'''
-
-
-val1 = 0.01
-val2 = 0.08
-
-epsilon1 = 1.2
-epsilon2 = 1.3
-
-delta_epsilon = epsilon1 - epsilon2
-
-delta_val = val1 - val2
-
-strain = np.arange(epsilon1, epsilon2, 0.001)
-
-val = delta_val * (0.5 + (0.5 * np.cos((strain-epsilon1)*(np.pi/delta_epsilon)))) + val2
-
-import matplotlib.pyplot as plt
-plt.plot(strain, val)
-
-'''
-
-# %%
-# eps_ref = 0.001
-# scale = 25
-# C0 = 1000
-# Cinf = 500
-
-# strain = np.arange(0,100, 0.1)
-
-# y = np.arange(0,1, 0.001)
-
-
-# # C = 2 * (y * 2)**16 + 5.0 * sympy.exp(-(strain.sym[0]/0.1)**2) + 0.1
-# # C = 2 * (y * 2)**16 + (C0-Cinf) * (1 - np.tanh((strain/eps_ref - 1)*scale) ) / 2 + Cinf
-
-# %%
 cohesion_fn = mat_strength_change(strain, cohesion, cohesionW, 0.5, 1.5) # material_weakening(strain, cohesion, cohesionW, 0.5, 1.5)
 vonMises = 0.5 * cohesion_fn / (strainRate_2ndInvariant+1.0e-18)
 
