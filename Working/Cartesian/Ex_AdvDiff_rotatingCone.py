@@ -84,7 +84,7 @@ sigma = 0.2          # width of blob
 x_0   = (1./6, 1./6) # position of blob
 kappa = 1e-6         # thermal diffusion (entire domain)
 
-# Create an adv
+# Create an mesh vars
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 

@@ -38,7 +38,7 @@ linear = False ### False for NL version
 
 # %%
 ## number of steps
-nsteps = 11
+nsteps = 51
 
 ## swarm gauss point count (particle distribution)
 swarmGPC = 2
@@ -92,8 +92,6 @@ scaling_coefficients
 # %%
 ND_gravity = nd( 9.81 * u.meter / u.second**2 )
 
-ND_gravity * nd(3.3e3 * u.kilogram / u.metre**3)
-
 # %%
 ### add material index
 BGIndex = 0
@@ -107,11 +105,11 @@ xmin, xmax = 0., ndim(1000*u.kilometer)
 ymin, ymax = 0., ndim(660*u.kilometer)
 
 # %%
-if uw.mpi.size <= 4:
-    ### run low res locally
-    resx = 50
-    resy = 33
-elif uw.mpi.size <= 16:
+# if uw.mpi.size <= 4:
+#     ### run low res locally
+#     resx = 50
+#     resy = 33
+if uw.mpi.size <= 16:
     ### run low res in parallel 
     resx = 100
     resy =  66
@@ -131,17 +129,12 @@ if uw.mpi.rank == 0:
 # ### Create mesh
 
 # %%
-# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(0.0,0.0), 
-#                                               maxCoords=(1.0,1.0), 
-#                                               cellSize=1.0/res, 
-#                                               regular=True)
-
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / resy, regular=False)
+# mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=1.0 / resy, regular=False)
 
 
-# mesh = uw.meshing.StructuredQuadBox(elementRes =(int(resx),int(resy)),
-#                                     minCoords=(xmin,ymin), 
-#                                     maxCoords=(xmax,ymax))
+mesh = uw.meshing.StructuredQuadBox(elementRes =(int(resx),int(resy)),
+                                    minCoords=(xmin,ymin), 
+                                    maxCoords=(xmax,ymax))
 
 
 # %% [markdown]
@@ -311,8 +304,11 @@ def plot_mat():
     point_cloud = pv.PolyData(points)
     
     ### create point cloud for passive tracers
-    with passiveSwarm.access():
-        passiveCloud = pv.PolyData(np.vstack((passiveSwarm.data[:,0],passiveSwarm.data[:,1], np.zeros(len(passiveSwarm.data)))).T)
+    with passiveSwarm_L.access():
+        passiveCloud_L = pv.PolyData(np.vstack((passiveSwarm_L.data[:,0],passiveSwarm_L.data[:,1], np.zeros(len(passiveSwarm_L.data)))).T)
+        
+    with passiveSwarm_R.access():
+        passiveCloud_R = pv.PolyData(np.vstack((passiveSwarm_R.data[:,0],passiveSwarm_R.data[:,1], np.zeros(len(passiveSwarm_R.data)))).T)
 
 
     with swarm.access():
@@ -335,7 +331,10 @@ def plot_mat():
                         use_transparency=False, opacity=0.95)
     
     ### add points of passive tracers
-    pl.add_mesh(passiveCloud, color='black', show_edges=True,
+    pl.add_mesh(passiveCloud_L, color='black', show_edges=True,
+                    use_transparency=False, opacity=0.95)
+    
+    pl.add_mesh(passiveCloud_R, color='black', show_edges=True,
                     use_transparency=False, opacity=0.95)
 
 
@@ -363,26 +362,23 @@ stokes.add_dirichlet_bc( sol_vel, ["Top", "Bottom"],  [1] )  # top/bottom: compo
 
 # %%
 
-y = np.linspace(nd((660-80)*u.kilometer), nd((660-330)*u.kilometer), 10)
+y = np.linspace(nd((660-80)*u.kilometer), nd((660-330)*u.kilometer), 50)
 
 x0 = np.zeros_like(y) + nd((500-40)*u.kilometer)
 
 x1 = np.zeros_like(y) + nd((500+40)*u.kilometer)
-
-tracers = np.concatenate( (np.vstack([x0,y]).T, np.vstack([x1,y]).T) )
-
-# %%
+tracers_L = np.vstack([x0,y]).T
+tracers_R = np.vstack([x1,y]).T
 
 # %%
-### add a tracer
-# tracer = np.zeros(shape=(1,2))
-# tracer[:,0] = nd(500*u.kilometer)
-# tracer[:,1] = nd((660 - (250+80)) * u.kilometer)
+passiveSwarm_L = uw.swarm.Swarm(mesh)
+
+passiveSwarm_L.add_particles_with_coordinates(np.ascontiguousarray(tracers_L))
 
 # %%
-passiveSwarm = uw.swarm.Swarm(mesh)
+passiveSwarm_R = uw.swarm.Swarm(mesh)
 
-passiveSwarm.add_particles_with_coordinates(np.ascontiguousarray(tracers))
+passiveSwarm_R.add_particles_with_coordinates(np.ascontiguousarray(tracers_R))
 
 # %% [markdown]
 # #### Visualise swarm and passive tracers
@@ -390,100 +386,6 @@ passiveSwarm.add_particles_with_coordinates(np.ascontiguousarray(tracers))
 # %%
 if render == True & uw.mpi.size==1:
     plot_mat()
-
-
-# %%
-#### Create HPC-safe function to get swarm coords across all CPU's or only on root
-def globalPassiveSwarmCoords(swarm, rootProc=0):
-    '''
-    Distribute passive swarm coordinate data to all CPUs (bcast = True) or the rootProc, (bcast = False)
-    
-    Used for the analysis of coordinates of swarm that may move between processors
-    
-    swarm: swarm to gather coords
-    bcast: whether to broadcast swarm coords to all processors
-    rootProc: processor to gather coords to
-    
-    '''
-    
-    comm = uw.mpi.comm
-    rank = uw.mpi.rank
-    size = uw.mpi.size
-    
-
-    with swarm.access():
-        if len(swarm.data) > 0:
-            x_local = np.ascontiguousarray(swarm.data[:,0].copy())
-            y_local = np.ascontiguousarray(swarm.data[:,1].copy())
-            if swarm.data.shape[1] == 3:
-                z_local = np.ascontiguousarray(swarm.data[:,2].copy())
-            else:
-                z_local = np.zeros_like(swarm.data[:,0])*np.nan
-                
-        else:
-            x_local = np.array([np.nan], dtype='float64')
-            y_local = np.array([np.nan], dtype='float64')
-            z_local = np.array([np.nan], dtype='float64')
-            
-            
-            
-    ### Collect local array sizes using the high-level mpi4py gather
-    sendcounts = np.array(comm.gather(len(x_local), root=rootProc))
-    
-    
-    if rank == rootProc:
-        x_global = np.zeros((sum(sendcounts)), dtype='float64')
-        y_global = np.zeros((sum(sendcounts)), dtype='float64')
-        z_global = np.zeros((sum(sendcounts)), dtype='float64')
-    else:
-        x_global = None
-        y_global = None
-        z_global = None
-        
-
-    comm.barrier()
-
-    ## gather x values, can't do them together
-    comm.Gatherv(sendbuf=x_local, recvbuf=(x_global, sendcounts), root=rootProc)
-    ## gather y values
-    comm.Gatherv(sendbuf=y_local, recvbuf=(y_global, sendcounts), root=rootProc)
-
-    ## gather z values
-    comm.Gatherv(sendbuf=z_local, recvbuf=(z_global, sendcounts), root=rootProc)
-    
-    comm.barrier()
-    
-    def sortCoords():
-        ## Put back into combined array
-        Coords = np.zeros(shape=(len(x_global),3))*np.nan
-        Coords[:,0] = x_global
-        Coords[:,1] = y_global
-        Coords[:,2] = z_global
-        
-        comm.barrier()
-
-        ### remove rows with NaN
-        Coords = Coords[~np.isnan(Coords[:,0])]
-        ### remove cols with NaN
-        Coords = Coords[:, ~np.isnan(Coords).all(axis=0)]
-        
-        comm.barrier()
-        
-        return Coords
-    
-    #### make swarm coords available on all processors
-    x_global = comm.bcast(x_global, root=rootProc)
-    y_global = comm.bcast(y_global, root=rootProc)
-    z_global = comm.bcast(z_global, root=rootProc)
-
-    comm.barrier()
-
-    Coords = sortCoords()
-
-    comm.barrier()
-            
-    return Coords
-
 
 # %% [markdown]
 # #### Set up density and viscosity of materials
@@ -497,8 +399,6 @@ densitySlab   = nd(3300* u.kilogram / u.metre**3)
 density_fn = material.createMask([densityBG, densitySlab])
 
 # %%
-
-
 stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density_fn])
 
 # %% [markdown]
@@ -508,7 +408,10 @@ stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density_fn])
 # Set solve options here (or remove default values
 stokes.petsc_options["ksp_monitor"] = None
 
-stokes.tolerance = 1.0e-6
+if uw.mpi.size == 1:
+    stokes.petsc_options['pc_type'] = 'lu'
+
+stokes.tolerance = 1.0e-5
 
 
 
@@ -547,13 +450,13 @@ if linear == False:
     n = 4
     viscSlab      = nd(4.75e11*u.pascal*u.second**(1/n))
 
-    NL_slab = viscSlab * sympy.Pow(stokes._Einv2, (1/n-1))
+    NL_slab = sympy.Max(sympy.Min(viscSlab * sympy.Pow(stokes._Einv2, (1/n-1)), nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second)) # 
 
 
 else:
     n = 1
     viscSlab      = nd(2e23*u.pascal*u.second)
-    NL_slab       = viscSlab * (stokes._Einv2)
+    NL_slab       = sympy.Max(sympy.Min(viscSlab, nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
 
 
 viscosity_mat_fn = material.createMask([viscBG,
@@ -567,10 +470,10 @@ viscosity_mat_fn = material.createMask([viscBG,
 # %%
 # ### add in material-based viscosity
 
-viscosity_NL_fn = sympy.Max(sympy.Min(viscosity_mat_fn, nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
+# viscosity_NL_fn = sympy.Max(sympy.Min(viscosity_mat_fn, nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
 
-stokes.constitutive_model.Parameters.viscosity = viscosity_NL_fn
-stokes.saddle_preconditioner = 1.0 / viscosity_NL_fn
+stokes.constitutive_model.Parameters.viscosity = viscosity_mat_fn
+stokes.saddle_preconditioner = 1.0 / viscosity_mat_fn
 
 
 
@@ -580,13 +483,6 @@ stokes.saddle_preconditioner = 1.0 / viscosity_NL_fn
 
 # %%
 def saveData(step, outputPath, time):
-    
-    ### save mesh vars
-    fname = f"{outputPath}mesh_{'step_'}{step:02d}.h5"
-    xfname = f"{outputPath}mesh_{'step_'}{step:02d}.xmf"
-    viewer = PETSc.ViewerHDF5().createHDF5(fname, mode=PETSc.Viewer.Mode.WRITE,  comm=PETSc.COMM_WORLD)
-
-    viewer(mesh.dm)
 
     ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
     mesh.petsc_save_checkpoint(index=step, 
@@ -597,7 +493,8 @@ def saveData(step, outputPath, time):
     #### save the swarm and selected variables
     swarm.petsc_save_checkpoint('swarm', step, outputPath)
     
-    passiveSwarm.petsc_save_checkpoint('PT', step, outputPath)
+    passiveSwarm_L.petsc_save_checkpoint('PT_L', step, outputPath)
+    passiveSwarm_R.petsc_save_checkpoint('PT_R', step, outputPath)
     
 
 
@@ -606,20 +503,28 @@ step   = 0
 time   = 0.
 
 # %%
-tSinker = np.zeros(nsteps)*np.nan
-ySinker = np.zeros(nsteps)*np.nan
+tSinker   = np.zeros(nsteps)*np.nan
+NeckWidth = np.zeros(nsteps)*np.nan
 
 # %% [markdown]
 # ### Solver loop for multiple iterations
 
 # %%
 while step < nsteps:
-    ### Get the position of the sinking ball
-    PTdata = globalPassiveSwarmCoords(swarm=passiveSwarm)
-    ymin = PTdata[:,1].min()
+    
+    ### Get the x coordinates of the passive tracers
+    with passiveSwarm_L.access():
+        PS_L =  uw.utilities.gather_data(passiveSwarm_L.data[:,0])
+    
+    with passiveSwarm_R.access():
+        PS_R =  uw.utilities.gather_data(passiveSwarm_R.data[:,0])
         
-    ySinker[step] = ymin
-    tSinker[step] = time
+    L_xmax = PS_L.max()
+    R_xmin = PS_R.min()
+    
+    #### calculate the minimum necking width   
+    NeckWidth[step] = R_xmin - L_xmax
+    tSinker[step]   = time
         
     ### save loop
     if step % 5 == 0:
@@ -632,7 +537,7 @@ while step < nsteps:
         
     ### print some stuff    
     if uw.mpi.rank==0:
-        print(f"\n\nStep: {str(step).rjust(3)}, time: {dim(time, u.megayear).m:6.2f} Myr, tracer:  {dim(ymin, u.kilometer).m:6.2f} km \n\n")
+        print(f"\n\nStep: {str(step).rjust(3)}, time: {dim(time, u.megayear).m:6.2f} Myr, Necking width:  {dim(NeckWidth[step], u.kilometer).m:6.2f} km \n\n")
         
     
     ### solve stokes 
@@ -644,30 +549,26 @@ while step < nsteps:
     ### advect the swarm
     swarm.advection(stokes.u.sym, dt, corrector=False)
     
-    passiveSwarm.advection(stokes.u.sym, dt, corrector=False)
+    passiveSwarm_L.advection(stokes.u.sym, dt, corrector=False)
+    
+    passiveSwarm_R.advection(stokes.u.sym, dt, corrector=False)
     
     
         
     step+=1
     time+=dt
-    
-    # print('finished solver loop')
 
 # %% [markdown]
 # #### Check the results against the benchmark 
 
 # %%
 ### remove nan values, if any. Convert to km and Myr
-ySinker = dim(ySinker[~np.isnan(ySinker)], u.kilometer)
-tSinker = dim(tSinker[~np.isnan(tSinker)], u.megayear)
+NeckWidth_d = dim(NeckWidth[~np.isnan(NeckWidth)], u.kilometer)
+tSinker_d   = dim(tSinker[~np.isnan(tSinker)], u.megayear)
 
 if uw.mpi.rank==0:
-    print('Initial position: t = {0:.3f}, y = {1:.3f}'.format(tSinker[0], ySinker[0]))
-    print('Final position:   t = {0:.3f}, y = {1:.3f}'.format(tSinker[-1], ySinker[-1]))
-
-
-    UWvelocity = ((ySinker[0] - ySinker[-1]) / (tSinker[-1] - tSinker[0])).to(u.meter/u.second).m
-    print(f'Velocity:         v = {UWvelocity} m/s')
+    print('Initial width: t = {0:.3f}, y = {1:.3f}'.format(tSinker_d[0], NeckWidth_d[0]))
+    print('Final width:   t = {0:.3f}, y = {1:.3f}'.format(tSinker_d[-1], NeckWidth_d[-1]))
 
     
 if uw.mpi.size==1 and render == True:
@@ -677,98 +578,10 @@ if uw.mpi.size==1 and render == True:
     fig = plt.figure()
     fig.set_size_inches(12, 6)
     ax = fig.add_subplot(1,1,1)
-    ax.plot(tSinker.m, ySinker.m) 
+    ax.plot(tSinker_d.m, NeckWidth_d.m) 
     ax.set_xlabel('Time [Myr]')
-    ax.set_ylabel('Sinker position [km]')
+    ax.set_ylabel('Necking width [km]')
 
 # %%
 if uw.mpi.size==1 and render == True:
     plot_mat()
-
-# %%
-if uw.mpi.size==1 and render == True:
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
-
-    points = np.zeros((mesh._centroids.shape[0], 3))
-    points[:, 0] = mesh._centroids[:, 0]
-    points[:, 1] = mesh._centroids[:, 1]
-
-
-    pvmesh.point_data["pres"] = uw.function.evaluate(
-        p.sym[0], mesh.data
-    )
-    
-
-
-    # pvmesh.point_data["edot"] = uw.function.evaluate(strain_rate_inv2.sym[0], mesh.data)
-    # # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh.data, mesh.N)
-    # pvmesh.point_data["eta"] = uw.function.evaluate(node_viscosity.sym[0], mesh.data)
-    # pvmesh.point_data["str"] = uw.function.evaluate(dev_stress_inv2.sym[0], mesh.data)
-    
-    with mesh.access():
-        pvmesh.point_data["edot"] = strain_rate_inv2.data
-        pvmesh.point_data["eta"]  = node_viscosity.data
-        pvmesh.point_data["str"]  = dev_stress_inv2.data
-
-    with mesh.access():
-        usol = v.data.copy()
-
-    arrow_loc = np.zeros((v.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v.coords[...]
-
-    arrow_length = np.zeros((v.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
-
-    point_cloud0 = pv.PolyData(points)
-
-    with swarm.access():
-        point_cloud = pv.PolyData( np.zeros((swarm.data.shape[0], 3))  )
-        point_cloud.points[:,0:2] = swarm.data[:]
-        point_cloud.point_data["M"] = material.data.copy()
-        point_cloud.point_data["edot"] = uw.function.evaluate(strain_rate_inv2.sym[0], swarm.data)
-
-
-
-# %%
-if uw.mpi.size==1 and render == True:
-    pl = pv.Plotter()
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.03, opacity=0.75)
-
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        scalars="edot",
-        edge_color="Grey",
-        show_edges=True,
-        use_transparency=False,
-        log_scale=True,
-        # clim=[0.1,2.1],
-        opacity=1.0,
-    )
-    
-    # pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="edot",
-    #                     use_transparency=False, opacity=0.1, log_scale=True)
-
-    # pl.add_points(
-    #     point_cloud,
-    #     cmap="coolwarm",
-    #     render_points_as_spheres=False,
-    #     point_size=10,
-    #     opacity=0.3,
-    # )
-
-    pl.show(cpos="xy")

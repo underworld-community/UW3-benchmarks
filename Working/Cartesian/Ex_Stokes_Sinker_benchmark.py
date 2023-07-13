@@ -20,6 +20,10 @@
 #
 # Stokes velocity is calculated and compared with the velocity from the UW model to benchmark the stokes solver
 #
+# Other model benchmarks:
+# - [Aspect benchmarks](https://aspect-documentation.readthedocs.io/en/latest/user/cookbooks/cookbooks/stokes/doc/stokes.html)
+# - [UW2 example](https://github.com/underworldcode/underworld2/blob/master/docs/examples/04_StokesSinker.ipynb)
+#
 
 from petsc4py import PETSc
 import underworld3 as uw
@@ -42,14 +46,14 @@ save_output = False
 # -
 
 ### number of steps for the model
-nstep = 21
+nsteps = 2
 
 ### stokes tolerance
 tol = 1e-5
 
 # +
 #### output folder name
-outputPath = f"output/sinker_eta1e6_rho10/"
+outputPath = f"output/sinker_eta10_rho10/"
 
 if uw.mpi.rank==0:      
     ### create folder if not run before
@@ -58,7 +62,8 @@ if uw.mpi.rank==0:
 # -
 
 ### resolution of the model
-res = 80
+res = int(16*7)
+res
 
 # Set size and position of dense sphere.
 sphereRadius = 0.1
@@ -70,17 +75,17 @@ materialHeavyIndex = 1
 
 # Set constants for the viscosity of each material
 viscBG     =  1.0
-viscSphere = 1000.0
+viscSphere = 10.0
 
 # set density of the different materials
-densityBG     =  0.0
+densityBG     =  1.0
 densitySphere = 10.0
+
+gravity = 1
 
 # location of tracer at bottom of sinker
 x_pos = sphereCentre[0]
-y_pos = sphereCentre[1] - sphereRadius
-
-nsteps = 11
+y_pos = sphereCentre[1]
 
 # +
 # mesh = uw.meshing.UnstructuredSimplexBox(
@@ -138,7 +143,7 @@ with swarm.access(material):
 
 ### add tracer for sinker velocity
 tracer_coords = np.zeros(shape=(1, 2))
-tracer_coords[:, 0], tracer_coords[:, 1] = x_pos, y_pos
+tracer_coords[:, 0], tracer_coords[:, 1] = x_pos, y_pos-sphereRadius
 
 tracer = uw.swarm.Swarm(mesh=mesh)
 
@@ -165,7 +170,7 @@ pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
 pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
 
 stokes.constitutive_model.Parameters.viscosity = viscosity_fn
-stokes.bodyforce = sympy.Matrix([0, -1 * density_fn])
+stokes.bodyforce = sympy.Matrix([0, -1 * gravity * density_fn])
 stokes.saddle_preconditioner = 1.0 / stokes.constitutive_model.Parameters.viscosity
 
 
@@ -177,18 +182,12 @@ time = 0.0
 tSinker = np.zeros(nsteps)*np.nan
 ySinker = np.zeros(nsteps)*np.nan
 
-v.sym[1]
-
-p.sym
-
 if uw.mpi.size == 1:
     stokes.petsc_options['pc_type'] = 'lu'
 
-stokes.petsc_options.view()
-
 # #### Stokes solver loop
 
-while step < nstep:
+while step < nsteps:
     ### Get the position of the sinking ball
     with tracer.access():
         ymin = tracer.data[:,1].min()
@@ -198,7 +197,7 @@ while step < nstep:
     
     ### print some stuff
     if uw.mpi.rank == 0:
-        print(f"Step: {str(step).rjust(3)}, time: {time:6.2f}, tracer:  {ymin:6.2f}")
+        print(f"Step: {str(step).rjust(3)}, time: {time:6.3f}, tracer:  {ymin:6.3f}")
             
     
 
@@ -221,12 +220,17 @@ while step < nstep:
     time += dt
 
 
-mesh.petsc_save_checkpoint(meshVars=[v, p,], index=step, outputPath=outputPath)
-swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=outputPath)
-tracer.petsc_save_checkpoint(swarmName='tracer', index=step, outputPath=outputPath)
+# +
+# mesh.petsc_save_checkpoint(meshVars=[v, p,], index=step, outputPath=outputPath)
+# swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=outputPath)
+# tracer.petsc_save_checkpoint(swarmName='tracer', index=step, outputPath=outputPath)
+# -
 
-stokesSink_vel = (((2*sphereRadius)**2)*(densitySphere - densityBG)*1)/18*viscBG
+stokesSink_vel = (2/9)*(((densitySphere-densityBG)*(sphereRadius**2)*gravity)/viscBG) 
 print(f'stokes sinking velocity: {stokesSink_vel}')
+
+stokesSink_vel_alt = (((2*sphereRadius)**2)*(densitySphere - densityBG)*gravity)/(18*viscBG)
+print(f'stokes sinking velocity (alt): {stokesSink_vel_alt}')
 
 # #### Compare velocity from the model with numerical solution to benchmark the Stokes solver
 
@@ -238,6 +242,7 @@ if uw.mpi.rank==0:
     
     t_benchmark = np.arange(0, tSinker.max(), 0.1)
     v_benchmark = 0.6 - (t_benchmark*stokesSink_vel)
+    v_benchmark_alt = 0.6 - (t_benchmark*stokesSink_vel_alt)
     
     
     print('Initial position: t = {0:.3f}, y = {1:.3f}'.format(tSinker[0], ySinker[0]))
@@ -253,9 +258,10 @@ if uw.mpi.size==1:
     fig = pyplot.figure()
     fig.set_size_inches(12, 6)
     ax = fig.add_subplot(1,1,1)
-    ax.plot(tSinker, ySinker, label='UW sinker') 
+    ax.plot(tSinker, ySinker, label='UW') 
     
-    ax.plot(t_benchmark, v_benchmark, ls='--', label='benchmark') 
+    ax.plot(t_benchmark, v_benchmark, ls='--', label='Numerical') 
+    ax.plot(t_benchmark, v_benchmark_alt, ls=':', label='Numerical') 
     
     ax.legend()
     
@@ -329,5 +335,11 @@ if uw.mpi.size == 1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
+
+res = [16, 32, 48, 64, 80, 96, 112]
+velocity = [0.0188830, 0.023293, 0.024703684, 0.0251062, 0.0245767, 0.02529, 0.0255126]
+
+import matplotlib.pyplot as plt
+plt.plot(res, velocity)
 
 

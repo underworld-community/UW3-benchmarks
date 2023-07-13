@@ -359,8 +359,6 @@ darcy._v_projector.petsc_options["ksp_rtol"] = 1.0e-12
 adv_diff._u_star_projector.petsc_options["snes_rtol"] = 1.0e-12
 adv_diff._u_star_projector.petsc_options["snes_atol"] = 1.0e-6
 
-darcy.petsc_options.view()
-
 # ### Solve loop
 
 time = 0

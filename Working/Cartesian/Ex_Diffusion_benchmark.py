@@ -38,7 +38,7 @@ sys.pushErrorHandler("traceback")
 
 
 # Set the resolution.
-res = 32
+res = 64
 
 xmin, xmax = 0.0, 1.0
 ymin, ymax = 0.0, 1.0
@@ -223,7 +223,12 @@ tempData = uw.function.evaluate(adv_diff.u.fn, sample_points)
 step = 0
 time = 0.0
 
-nsteps = 21
+nsteps = 4
+
+round(time, 5)
+
+# +
+fig, ax = plt.subplots(1, nsteps, figsize=(15,3), sharex=True, sharey=True)
 
 while step < nsteps:
     ### print some stuff
@@ -233,15 +238,14 @@ while step < nsteps:
     ### 1D profile from underworld
     t1 = uw.function.evaluate(adv_diff.u.fn, sample_points)
 
-    if uw.mpi.size == 1 and step % 10 == 0:
+    if uw.mpi.size == 1:# and step % 10 == 0:
         """compare 1D and 2D models"""
-        plt.figure()
         ### profile from UW
-        plt.plot(t1, sample_points[:, 1], ls="-", c="red", label="UW numerical solution")
+        ax[step].plot(t1, sample_points[:, 1], ls="-", c="red", label="UW numerical solution")
         ### numerical solution
-        plt.plot(tempData, sample_points[:, 1], ls=":", c="k", label="1D analytical solution")
-        plt.legend()
-        plt.show()
+        ax[step].plot(tempData, sample_points[:, 1], ls=":", c="k", label="1D numerical solution")
+        ax[step].set_title(f'time: {round(time, 5)}', fontsize=8)
+        ax[step].legend(fontsize=8)
 
     ### 1D diffusion
     tempData = diffusion_1D(
@@ -261,5 +265,10 @@ while step < nsteps:
 
     step += 1
     time += dt
+    
+plt.savefig('./benchmark_figs/Diffusion_benchmark_evolution.pdf', bbox_inches='tight', dpi=500)
+# -
 
 plot_fig()
+
+
