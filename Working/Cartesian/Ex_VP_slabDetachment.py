@@ -503,7 +503,7 @@ step   = 0
 time   = 0.
 
 # %%
-tSinker   = np.zeros(nsteps)*np.nan
+time_array   = np.zeros(nsteps)*np.nan
 NeckWidth = np.zeros(nsteps)*np.nan
 
 # %% [markdown]
@@ -524,7 +524,7 @@ while step < nsteps:
     
     #### calculate the minimum necking width   
     NeckWidth[step] = R_xmin - L_xmax
-    tSinker[step]   = time
+    time_array[step]   = time
         
     ### save loop
     if step % 5 == 0:
@@ -564,11 +564,11 @@ while step < nsteps:
 # %%
 ### remove nan values, if any. Convert to km and Myr
 NeckWidth_d = dim(NeckWidth[~np.isnan(NeckWidth)], u.kilometer)
-tSinker_d   = dim(tSinker[~np.isnan(tSinker)], u.megayear)
+time_array_d   = dim(time_array[~np.isnan(time_array)], u.megayear)
 
 if uw.mpi.rank==0:
-    print('Initial width: t = {0:.3f}, y = {1:.3f}'.format(tSinker_d[0], NeckWidth_d[0]))
-    print('Final width:   t = {0:.3f}, y = {1:.3f}'.format(tSinker_d[-1], NeckWidth_d[-1]))
+    print('Initial width: t = {0:.3f}, y = {1:.3f}'.format(time_array_d[0], NeckWidth_d[0]))
+    print('Final width:   t = {0:.3f}, y = {1:.3f}'.format(time_array_d[-1], NeckWidth_d[-1]))
 
     
 if uw.mpi.size==1 and render == True:
@@ -578,10 +578,12 @@ if uw.mpi.size==1 and render == True:
     fig = plt.figure()
     fig.set_size_inches(12, 6)
     ax = fig.add_subplot(1,1,1)
-    ax.plot(tSinker_d.m, NeckWidth_d.m) 
+    ax.plot(time_array_d.m, NeckWidth_d.m) 
     ax.set_xlabel('Time [Myr]')
     ax.set_ylabel('Necking width [km]')
 
 # %%
 if uw.mpi.size==1 and render == True:
     plot_mat()
+
+# %%
