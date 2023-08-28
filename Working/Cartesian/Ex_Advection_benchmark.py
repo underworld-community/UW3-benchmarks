@@ -12,10 +12,10 @@
 #     name: python3
 # ---
 
-# # Linear diffusion of a hot pipe
+# # Advection of a hot pipe
 #
 # - Using the adv_diff solver.
-# - No advection as the velocity field is not updated (and set to 0).
+# - Advection of the hot pipe vertically. The velocity is 1/mesh.get_min_radius() to advect the pipe upwards.
 # - Benchmark comparison between 1D analytical solution and 2D UW numerical model.
 #
 
@@ -45,32 +45,39 @@ sys.pushErrorHandler("traceback")
 res = 64
 
 Tdegree = 3
+Vdegree = 2
 # -
+
+mesh_qdegree = max(Tdegree, Vdegree)
+mesh_qdegree
 
 xmin, xmax = 0.0, 1.0
 ymin, ymax = 0.0, 1.0
 
-pipe_thickness = 0.4  ###
+pipe_thickness = 0.4 
 
 # +
 mesh = uw.meshing.StructuredQuadBox(
-    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax), qdegree=Tdegree)
+    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax), qdegree=mesh_qdegree)
 
 # mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
 #                                          , cellSize=1/res, qdegree=2)
                                     
+# -
 
+
+velocity = (1/mesh.get_min_radius())
 
 # +
 # Set some values of the system
-k = 1.0 # diffusive constant
+k = 0.0 # diffusive constant
 
 tmin = 0.5 # temp min
 tmax = 1.0 # temp max
 # -
 
 # Create an adv
-v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
+v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=Vdegree)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=Tdegree)
 
 # #### Create the advDiff solver
@@ -102,6 +109,10 @@ with mesh.access(T):
         (T.coords[:, 1] >= (T.coords[:, 1].min() + pipePosition))
         & (T.coords[:, 1] <= (T.coords[:, 1].max() - pipePosition))
     ] = tmax
+
+with mesh.access(v):
+    v.data[:,0] = 0.
+    v.data[:,1] = velocity
 
 
 # %%
@@ -216,7 +227,7 @@ sample_points[:, 1] = sample_y
 T_orig = uw.function.evaluate(T.sym[0], sample_points)
 
 
-def diffusion_1D(sample_points, T0, diffusivity, time_1D):
+def diffusion_1D(sample_points, T0, diffusivity, vel, time_1D):
     x = sample_points
     T = T0
     k = diffusivity
@@ -224,7 +235,10 @@ def diffusion_1D(sample_points, T0, diffusivity, time_1D):
 
     dx = sample_points[1] - sample_points[0]
 
-    dt = 0.5 * (dx**2 / k)
+    dt_dif = (dx**2 / k)
+    dt_adv = (dx/velocity)
+
+    dt = 0.5 * min(dt_dif, dt_adv)
 
 
     if time > 0:
@@ -252,8 +266,6 @@ fig_step = 0
 nfigs = 4
 nsteps = nfigs*4
 
-
-
 # +
 fig, ax = plt.subplots(1, nfigs+1, figsize=(15,3), sharex=True, sharey=True)
 
@@ -267,15 +279,18 @@ while step < nsteps+1:
 
     ### 1D numerical diffusion
     T_1D_model = diffusion_1D(
-        sample_points=sample_points[:, 1], T0=T_orig.copy(), diffusivity=k, time_1D=model_time
+        sample_points=sample_points[:, 1], T0=T_orig.copy(), diffusivity=k, vel=velocity, time_1D=model_time
     )
+
+    #### 1D numerical advection
+    new_y = sample_points[:,1] + (velocity*model_time)
 
     if uw.mpi.size == 1 and step % (nsteps/nfigs) == 0:
         """compare 1D and 2D models"""
         ### profile from UW
         ax[fig_step].plot(T_UW, sample_points[:, 1], ls="-", c="red", label="UW numerical solution")
         ### numerical solution
-        ax[fig_step].plot(T_1D_model, sample_points[:, 1], ls="-.", c="k", label="1D numerical solution")
+        ax[fig_step].plot(T_1D_model, new_y, ls="-.", c="k", label="1D numerical solution")
         ax[fig_step].set_title(f'time: {round(model_time, 5)}', fontsize=8)
         ax[fig_step].legend(fontsize=8)
         fig_step += 1
@@ -295,7 +310,7 @@ while step < nsteps+1:
     step += 1
     model_time += dt
     
-plt.savefig(f'./Diffusion_benchmark_res={res}_Tdegree={T.degree}.pdf', bbox_inches='tight', dpi=500)
+plt.savefig(f'./adv_benchmark_res={res}_Tdegree={T.degree}_Vdegree={v.degree}.pdf', bbox_inches='tight', dpi=500)
 # -
 
 plot_fig()

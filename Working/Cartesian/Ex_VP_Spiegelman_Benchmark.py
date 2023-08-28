@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.5
+#       jupytext_version: 1.14.7
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -336,10 +336,10 @@ ref_SR = dim(1, 1/u.second).m
 # +
 swarm = uw.swarm.Swarm(mesh=mesh1)
 mat = uw.swarm.SwarmVariable(
-    "mat", swarm, size=1, proxy_continuous=False, proxy_degree=2)
+    "mat", swarm, size=1, proxy_degree=1)
 
 material = uw.swarm.IndexSwarmVariable(
-    'M', swarm, indices=2, proxy_degree=0, proxy_continuous=False)
+    'M', swarm, indices=2, proxy_degree=1)
 
 ### This produces particles at the centre of cells
 swarm.populate(fill_param=0)
@@ -435,7 +435,7 @@ stokes = uw.systems.Stokes(
 
 # ##### Setup the constitutive model
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscoPlasticFlowModel(mesh1.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v_soln)
 
 # #### Boundary conditions
 
@@ -465,14 +465,14 @@ strain_rate_calc.uw_function = stokes._Einv2
 strain_rate_calc.smoothing = 1.0e-3
 
 viscosity_calc = uw.systems.Projection(mesh1, visc)
-viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
+viscosity_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
 viscosity_calc.smoothing = 1.0e-3
 
 stress_calc = uw.systems.Projection(mesh1, stress)
-S = stokes.stress_deviator
-stress_calc.uw_function = (
-    sympy.simplify(sympy.sqrt(((S**2).trace()) / 2)) - p_soln.sym[0]
-)
+# S = stokes.stress_deviator
+# stress_calc.uw_function = (
+#     sympy.simplify(sympy.sqrt(((S**2).trace()) / 2)) - p_soln.sym[0]
+# )
 stress_calc.smoothing = 1.0e-3
 
 
@@ -483,13 +483,14 @@ def plotFig():
     import pyvista as pv
     import vtk
     
-    viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
     stress_calc.uw_function = (
-        2 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
+        2 * visc_fn * stokes._Einv2
     )
 
-    strain_rate_calc.solve()
+    viscosity_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
+    
     viscosity_calc.solve()
+    strain_rate_calc.solve()
     stress_calc.solve()
 
     pv.global_theme.background = "white"
@@ -513,7 +514,7 @@ def plotFig():
     pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh1.data)
     pvmesh.point_data["edot"] = uw.function.evaluate(edot.sym[0], mesh1.data)
     # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh1.data, mesh1.N)
-    pvmesh.point_data["eta"] = uw.function.evaluate(visc.sym[0], mesh1.data)
+    pvmesh.point_data["eta"] = visc.rbf_interpolate(visc.coords, nnn=1) #uw.function.evaluate(visc.sym[0], mesh1.data)
     pvmesh.point_data["str"] = uw.function.evaluate(stress.sym[0], mesh1.data)
 
     with mesh1.access():
@@ -537,7 +538,7 @@ def plotFig():
     pl.add_mesh(
         pvmesh,
         cmap="jet",
-        scalars="edot",
+        scalars="eta",
         edge_color="Grey",
         show_edges=True,
         use_transparency=False,
@@ -566,7 +567,7 @@ def plotFig():
 # or remove default values
 
 # +
-stokes.petsc_options["ksp_monitor"] = None
+# stokes.petsc_options["ksp_monitor"] = None
 
 if uw.mpi.size == 1:
     stokes.petsc_options['pc_type'] = 'lu'
@@ -574,7 +575,7 @@ if uw.mpi.size == 1:
 # +
 stokes.petsc_options["snes_max_it"] = 500
 
-stokes.petsc_options.setValue("snes_max_it", 500)
+# stokes.petsc_options.setValue("snes_max_it", 500)
 
 ### sets the relative tolerance
 stokes.tolerance = 1e-12
@@ -589,15 +590,14 @@ visc_top    = nd(1e24*u.pascal*u.second)
 visc_bottom = nd(1e21*u.pascal*u.second)
 # -
 
-stokes.constitutive_model.Parameters.materialIndex = material
-stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
-stokes.constitutive_model.Parameters.viscosity
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
 
 # +
 # First, we solve the linear problem
 
 
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+# stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 
 # stokes.penalty = 0.1
@@ -624,35 +624,44 @@ if uw.mpi.size == 1:
 ### top
 nd_C = nd(1e8*u.pascal)
 
-tau_y = nd_C
+tau_y = nd_C 
+
+eta_plastic = tau_y / ( 2* (stokes._Einv2 + 1.0e-18) )
 
 ### background viscosities
-visc_top = nd(1e24*u.pascal*u.second)
+visc_top = sympy.Min(nd(1e24*u.pascal*u.second), eta_plastic)#1 /  ((1/nd(1e24*u.pascal*u.second)) + (1/eta_plastic))
 
 visc_bottom = nd(1e21*u.pascal*u.second)
 
 
-# -
+# +
 
-stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
-stokes.constitutive_model.Parameters.yield_stress = [0, tau_y] 
-stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
-stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
-stokes.constitutive_model.Parameters.averaging_method = 'HA'
-stokes.constitutive_model.Parameters.viscosity
 
-# + jupyter={"outputs_hidden": true}
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
+
+
+
+# +
 # stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
 
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+# stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 
 stokes.solve(zero_init_guess=False, picard=0)
-# -
 
 
+# +
 if uw.mpi.size ==1:
     plotFig()
+
+
+# -
+
+if uw.mpi.size ==1:
+    import matplotlib.pyplot as plt
+    with mesh1.access(visc):
+        plt.scatter(visc.coords[:,0], visc.coords[:,1], c = visc.data)
 
 # #### Same solve
 # but using the minimum method to determine the viscosity

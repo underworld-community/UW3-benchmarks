@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.5
+#       jupytext_version: 1.14.7
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -67,7 +67,7 @@ if uw.mpi.size == 1:
 # -
 
 # Create Darcy Solver
-darcy = uw.systems.SteadyStateDarcy(mesh, u_Field=p_soln, v_Field=v_soln)
+darcy = uw.systems.SteadyStateDarcy(mesh, p_soln, v_soln)
 darcy.petsc_options.delValue("ksp_monitor")
 darcy.petsc_options["snes_rtol"] = 1.0e-6  # Needs to be smaller than the contrast in properties
 darcy.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
@@ -98,7 +98,7 @@ kFunc = Piecewise((k1, y >= interfaceY), (k2, y < interfaceY), (1.0, True))
 
 darcy.constitutive_model.Parameters.diffusivity=kFunc
 darcy.f = 0.0
-darcy.s = sympy.Matrix([0, -1]).T
+darcy.s = sympy.Matrix([0, 0]).T
 
 # set up boundary conditions
 darcy.add_dirichlet_bc(0.0, "Top")
@@ -111,7 +111,7 @@ darcy._v_projector.smoothing = 1.0e-6
 darcy._v_projector.add_dirichlet_bc(0.0, "Left", 0)
 darcy._v_projector.add_dirichlet_bc(0.0, "Right", 0)
 # -
-# Solve time
+# Solve times
 darcy.solve()
 
 # +
@@ -223,5 +223,7 @@ ax1.plot(pressure_analytic_noG, ycoords, linewidth=3, linestyle="--", label="Ana
 ax1.grid("on")
 ax1.legend()
 # -
+
+
 
 

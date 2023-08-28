@@ -12,10 +12,10 @@
 #     name: python3
 # ---
 
-# # Linear diffusion of a hot pipe
+# # Advection-diffusion of a hot pipe
 #
 # - Using the adv_diff solver.
-# - No advection as the velocity field is not updated (and set to 0).
+# - Advection of the hot pipe vertically as it also diffuses. The velocity is 1/mesh.get_min_radius() and has a diffusivity value of 1.
 # - Benchmark comparison between 1D analytical solution and 2D UW numerical model.
 #
 
@@ -45,21 +45,34 @@ sys.pushErrorHandler("traceback")
 res = 64
 
 Tdegree = 3
+Vdegree = 2
+
+mesh_qdegree = max(Tdegree, Vdegree)
+mesh_qdegree
+
+# +
+### set to 0 for mesh version
+### set to 1 for swarm version
+
+benchmark_version = 1
 # -
 
 xmin, xmax = 0.0, 1.0
 ymin, ymax = 0.0, 1.0
 
-pipe_thickness = 0.4  ###
+pipe_thickness = 0.4 
 
 # +
 mesh = uw.meshing.StructuredQuadBox(
-    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax), qdegree=Tdegree)
+    elementRes=(int(res), int(res)), minCoords=(xmin, ymin), maxCoords=(xmax, ymax), qdegree=mesh_qdegree)
 
 # mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(xmin, ymin), maxCoords=(xmax, ymax)
-#                                          , cellSize=1/res, qdegree=2)
+#                                          , cellSize=1/res, qdegree=mesh_qdegree)
                                     
+# -
 
+
+velocity = 1 / mesh.get_min_radius() 
 
 # +
 # Set some values of the system
@@ -70,17 +83,36 @@ tmax = 1.0 # temp max
 # -
 
 # Create an adv
-v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=1)
+v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=Vdegree)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=Tdegree)
+
+if benchmark_version == 1:
+
+    swarm     = uw.swarm.Swarm(mesh=mesh)
+    
+    T_star  = swarm.add_variable("T_star", size=1, proxy_degree=T.degree)
+    
+    
+    
+    swarm.populate(fill_param=2)
 
 # #### Create the advDiff solver
 
-adv_diff = uw.systems.AdvDiffusionSLCN(
-    mesh,
-    u_Field=T,
-    V_Field=v,
-    solver_name="adv_diff",
-)
+if benchmark_version == 1:
+    adv_diff = uw.systems.AdvDiffusionSwarm(
+        mesh,
+        u_Field=T,
+        V_Field=v,
+        u_Star_fn=T_star.sym,
+        solver_name="adv_diff",
+    )
+else:
+        adv_diff = uw.systems.AdvDiffusionSLCN(
+        mesh,
+        u_Field=T,
+        V_Field=v,
+        solver_name="adv_diff",
+    )
 
 adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(T)
 adv_diff.constitutive_model.Parameters.diffusivity = k
@@ -93,6 +125,7 @@ adv_diff.add_dirichlet_bc(tmin, "Top")
 maxY = mesh.data[:, 1].max()
 minY = mesh.data[:, 1].min()
 
+# +
 with mesh.access(T):
     T.data[...] = tmin
 
@@ -102,6 +135,17 @@ with mesh.access(T):
         (T.coords[:, 1] >= (T.coords[:, 1].min() + pipePosition))
         & (T.coords[:, 1] <= (T.coords[:, 1].max() - pipePosition))
     ] = tmax
+
+if benchmark_version == 1:
+    with swarm.access(T_star):
+        T_star.data[:,0] = uw.function.evaluate(T.sym[0], swarm.particle_coordinates.data)
+
+
+# -
+
+with mesh.access(v):
+    v.data[:,0] = 0.
+    v.data[:,1] = velocity
 
 
 # %%
@@ -216,7 +260,7 @@ sample_points[:, 1] = sample_y
 T_orig = uw.function.evaluate(T.sym[0], sample_points)
 
 
-def diffusion_1D(sample_points, T0, diffusivity, time_1D):
+def diffusion_1D(sample_points, T0, diffusivity, vel, time_1D):
     x = sample_points
     T = T0
     k = diffusivity
@@ -224,7 +268,10 @@ def diffusion_1D(sample_points, T0, diffusivity, time_1D):
 
     dx = sample_points[1] - sample_points[0]
 
-    dt = 0.5 * (dx**2 / k)
+    dt_dif = (dx**2 / k)
+    dt_adv = (dx/velocity)
+
+    dt = 0.5 * min(dt_dif, dt_adv)
 
 
     if time > 0:
@@ -252,8 +299,6 @@ fig_step = 0
 nfigs = 4
 nsteps = nfigs*4
 
-
-
 # +
 fig, ax = plt.subplots(1, nfigs+1, figsize=(15,3), sharex=True, sharey=True)
 
@@ -267,15 +312,18 @@ while step < nsteps+1:
 
     ### 1D numerical diffusion
     T_1D_model = diffusion_1D(
-        sample_points=sample_points[:, 1], T0=T_orig.copy(), diffusivity=k, time_1D=model_time
+        sample_points=sample_points[:, 1], T0=T_orig.copy(), diffusivity=k, vel=velocity, time_1D=model_time
     )
+
+    #### 1D numerical advection
+    new_y = sample_points[:,1] + (velocity*model_time)
 
     if uw.mpi.size == 1 and step % (nsteps/nfigs) == 0:
         """compare 1D and 2D models"""
         ### profile from UW
         ax[fig_step].plot(T_UW, sample_points[:, 1], ls="-", c="red", label="UW numerical solution")
         ### numerical solution
-        ax[fig_step].plot(T_1D_model, sample_points[:, 1], ls="-.", c="k", label="1D numerical solution")
+        ax[fig_step].plot(T_1D_model, new_y, ls="-.", c="k", label="1D numerical solution")
         ax[fig_step].set_title(f'time: {round(model_time, 5)}', fontsize=8)
         ax[fig_step].legend(fontsize=8)
         fig_step += 1
@@ -287,6 +335,20 @@ while step < nsteps+1:
     
     ### diffuse through underworld
     adv_diff.solve(timestep=dt)
+
+
+    if benchmark_version == 1:
+        # Update the swarm values
+        with swarm.access(T_star):
+            T_star.data[:,0] = uw.function.evaluate(T.sym[0], swarm.particle_coordinates.data)
+
+        ### advect the swarm
+        swarm.advection(v.sym, dt, corrector=False)
+
+        
+    
+
+    
     finish = time.time()
 
     solver_time = finish - start
@@ -295,7 +357,7 @@ while step < nsteps+1:
     step += 1
     model_time += dt
     
-plt.savefig(f'./Diffusion_benchmark_res={res}_Tdegree={T.degree}.pdf', bbox_inches='tight', dpi=500)
+plt.savefig(f'./advDiff_swarm_benchmark_res={res}_Tdegree={T.degree}_Vdegree={v.degree}.pdf', bbox_inches='tight', dpi=500)
 # -
 
 plot_fig()

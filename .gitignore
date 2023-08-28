@@ -1,15 +1,20 @@
 
 ### ignore Mac file stuff
 *.DS_Store
+
 ### ignore all output files
 *.vtk
 *.h5
 *.msh
-### ignore certain dirs
+*.xdmf
+*.xmf
+*.pbin
+*.pdf
+*.jpg
 
+### ignore certain dirs
 *ipynb_checkpoints*
 Working/Cartesian/*/*
-*.xmf
-WIP/Annulus/Annulus_meshes.py
-WIP/Annulus/Ex_Convection_Cylinder-VP_FAC.py
-*.pbin
+WIP/Cartesian/*
+
+
