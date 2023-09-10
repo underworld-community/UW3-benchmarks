@@ -17,4 +17,9 @@
 Working/Cartesian/*/*
 WIP/Cartesian/*
 
+### allow some file types in some dirs
+!Data/*.h5
+!Data/*.xmf
+!Data/*.xdmf
+
 
