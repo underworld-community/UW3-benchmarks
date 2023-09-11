@@ -6,12 +6,12 @@
 ### allow some file types in some dirs
 *.vtk
 *.h5
-!Data/*.h5
+!/Data/*.h5
 *.msh
 *.xdmf
-!Data/*.xdmf
+!/Data/*.xdmf
 *.xmf
-!Data/*.xmf
+!/Data/*.xmf
 *.pbin
 *.pdf
 *.jpg
