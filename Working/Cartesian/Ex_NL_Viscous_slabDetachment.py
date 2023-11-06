@@ -46,7 +46,7 @@ linear = False ### False for NL version
 
 # %%
 ## number of steps
-nsteps = 301
+nsteps = 101
 
 ## swarm gauss point count (particle distribution)
 swarmGPC = 2
@@ -207,7 +207,7 @@ materialField  = uw.discretisation.MeshVariable("material", mesh, 1, degree=1)
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
 
 # %% [markdown]
 # #### Setup swarm
@@ -232,7 +232,7 @@ if reload == False:
                        (swarm.data[:,0] <= ndim((500+40)*u.kilometer))] = SlabIndex
 
 else:
-    pv_swarm_data = pv.XdmfReader(outputPath + f'swarm_00{restart_step}.xmf').read()
+    pv_swarm_data = pv.XdmfReader(outputPath + f'swarm_{restart_step}.xmf').read()
 
     swarm.add_particles_with_coordinates(np.ascontiguousarray( pv_swarm_data.points[:,0:2] ))
 
@@ -240,7 +240,7 @@ else:
         material.data[:,0] = pv_swarm_data['material']
 
     time = nd(time_d*u.megayear)
-    step = restart_step
+    step = int(restart_step)
     
 
 
@@ -409,23 +409,13 @@ def plot_mat():
 # #### Boundary conditions
 
 # %%
-sol_vel = sympy.Matrix([0.,0.])
+sol_vel = sympy.Matrix([0., 0.])
 
-### No slip left & right
-stokes.add_dirichlet_bc( 0., "Left",  0 )  # left/right: components, function, markers
-
-stokes.add_dirichlet_bc( 0., "Left",  1 )  # left/right: components, function, markers
-
-
-stokes.add_dirichlet_bc( 0., "Right",  0 )
-stokes.add_dirichlet_bc( 0., "Right",  1 )
-
-
-### free slip top and bottom
-stokes.add_dirichlet_bc( 0., "Top",  0 )  # top/bottom: components, function, markers 
-
-stokes.add_dirichlet_bc( 0., "Bottom",  1 )  # top/bottom: components, function, markers 
-
+# No slip left & right & free slip top & bottom
+stokes.add_dirichlet_bc( sol_vel, "Left",  [0,1] )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( sol_vel, "Right",  [0,1] )
+stokes.add_dirichlet_bc( sol_vel, "Top",  [1] )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc( sol_vel, "Bottom",  [1] )
 
 
 
@@ -453,11 +443,11 @@ if reload == False:
     passiveSwarm_R.add_particles_with_coordinates(np.ascontiguousarray(tracers_R))
 
 else:
-    pv_swarm_L = pv.XdmfReader(outputPath + f'PT_L_00{restart_step}.xmf').read()
+    pv_swarm_L = pv.XdmfReader(outputPath + f'PT_L_{restart_step}.xmf').read()
 
     passiveSwarm_L.add_particles_with_coordinates(np.ascontiguousarray( pv_swarm_L.points[:,0:2] ))
 
-    pv_swarm_R = pv.XdmfReader(outputPath + f'PT_R_00{restart_step}.xmf').read()
+    pv_swarm_R = pv.XdmfReader(outputPath + f'PT_R_{restart_step}.xmf').read()
 
     passiveSwarm_R.add_particles_with_coordinates(np.ascontiguousarray( pv_swarm_R.points[:,0:2] ))
 
@@ -662,11 +652,6 @@ while step < nsteps:
 # #### Check the results against the benchmark 
 
 # %%
-### update fields first
-updateFields(time = time)
-### save mesh variablesc
-saveData(step=step, outputPath=outputPath, time = time)
- 
 ### remove nan values, if any. Convert to km and Myr
 NeckWidth_d = dim(NeckWidth[~np.isnan(NeckWidth)], u.kilometer)
 time_array_d   = dim(time_array[~np.isnan(time_array)], u.megayear)
