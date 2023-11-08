@@ -1,12 +1,12 @@
 # %% [markdown]
-# # Constant viscosity convection, Cartesian domain (benchmark)
-#
-#
-#
-# This example solves 2D dimensionless isoviscous thermal convection with a Rayleigh number, for comparison with the [Blankenbach et al. (1989) benchmark](https://academic.oup.com/gji/article/98/1/23/622167).
-#
-# We set up a v, p, T system in which we will solve for a steady-state T field in response to thermal boundary conditions and then use the steady-state T field to compute a stokes flow in response.
-#
+# # King / Blankenbach Benchmark Case 1
+# 
+# ## Isoviscous thermal convection with EBA formulation.
+# 
+# Two-dimensional, incompressible, bottom heated, steady isoviscous thermal convection in a 1 x 1 box following the Extended Boussinesq Approximation formulation. See case 1 of [King et al. (2009)](https://doi.org/10.1111/j.1365-246X.2009.04413.x) / [Blankenbach et al. (1989) benchmark](https://academic.oup.com/gji/article/98/1/23/622167).
+# 
+# Extended Boussinesq Approximation, EBA, Stokes flow formulation.
+# 
 
 # %%
 import petsc4py
@@ -25,7 +25,13 @@ from copy import deepcopy
 # ### Set parameters to use 
 
 # %%
-Ra = 1e4 #### Rayleigh number
+Di = 0.5        # dissipation factor
+eta0 = 1e23     # for calculating topography 
+Ra = 1e4        # Rayleigh number
+
+# other non-dimensional parameters
+alphaBar = 1.      # this is set to 1 in King et al. 
+cp = 1             # set to 1 for now
 
 k = 1.0 #### diffusivity
 
@@ -36,14 +42,16 @@ tempMax   = 1.
 
 viscosity = 1
 
+tol = 1e-4
 res= 16             ### x and y res of box
 nsteps = 5        ### maximum number of time steps to run the first model 
-epsilon_lr = 1e-8   ### criteria for early stopping; relative change of the Vrms in between iterations  
+epsilon_lr = 1e-8   ### criteria for early stopping; relative change of the Vrms in between iterations 
 
 ##########
 # parameters needed for saving checkpoints
 # can set outdir to None if you don't want to save anything
-outDir = "./output/convection_16/"
+outdir = "/Users/jcgraciosa/Documents/codes/uw3-dev/EBA_test" 
+outfile = outdir + "/convection_16"
 save_every = 10
 #
 infile = None # set infile to a value if there's a checkpoint from a previous run that you want to start from
@@ -53,21 +61,22 @@ infile = None # set infile to a value if there's a checkpoint from a previous ru
 
 prev_res = None # if infile is not None, then this should be set to the previous model resolution
 
-os.makedirs(outDir, exist_ok = True)
+os.makedirs(outdir, exist_ok = True)
 
 # %% [markdown]
 # ### Create mesh and variables
 
 # %%
 meshbox = uw.meshing.UnstructuredSimplexBox(
-                                                minCoords=(0.0, 0.0), 
-                                                maxCoords=(boxLength, boxHeight), 
-                                                cellSize=1.0 /res,
-                                                qdegree = 3
+                                                minCoords=(0.0, 0.0), maxCoords=(boxLength, boxHeight), cellSize=1.0 /res, regular=False, qdegree = 3
                                         )
 
-# meshbox = uw.meshing.StructuredQuadBox(minCoords=(0.0, 0.0), maxCoords=(boxLength, boxHeight), elementRes=(res,res), qdegree = 3)
+#meshbox = uw.meshing.StructuredQuadBox(minCoords=(0.0, 0.0), maxCoords=(boxLength, boxHeight),  elementRes=(res,res))
 
+
+# %% [markdown]
+# ## Reference values 
+# With EBA, the reference state is $\bar \rho = 1$ and $\bar T = 0$.
 
 # %%
 # visualise the mesh if in a notebook / serial
@@ -87,8 +96,8 @@ if uw.mpi.size == 1:
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
 
-    meshbox.vtk(outDir+"Convection_mesh.vtk")
-    pvmesh = pv.read(outDir+"Convection_mesh.vtk")
+    meshbox.vtk("tmp_box_mesh.vtk")
+    pvmesh = pv.read("tmp_box_mesh.vtk")
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
@@ -97,21 +106,21 @@ if uw.mpi.size == 1:
     pl.show(cpos="xy")
 
 # %%
-v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2) # degree = 2
-p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1) # degree = 1
-t_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=3) # degree = 3
-t_0 = uw.discretisation.MeshVariable("T0", meshbox, 1, degree=3) # degree = 3
+v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1)
+t_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=3)
+t_0 = uw.discretisation.MeshVariable("T0", meshbox, 1, degree=3)
 
 # additional variable for the gradient
-dTdZ = uw.discretisation.MeshVariable(r"\partial T/ \partial \Z", # FIXME: Z should not be a function of x, y, z 
+dTdZ = uw.discretisation.MeshVariable(r"\partial T/ \partial \Z",
                                       meshbox, 
                                       1, 
-                                      degree = 3) # degree = 3
+                                      degree = 3) 
 
 # variable containing stress in the z direction
 sigma_zz = uw.discretisation.MeshVariable(r"\sigma_{zz}",  
                                         meshbox, 
-                                        1, degree=2) # degree = 3 
+                                        1, degree=2)
 
 x, z = meshbox.X
 
@@ -121,13 +130,25 @@ dTdZ_calc.uw_function = t_soln.sym.diff(z)[0]
 dTdZ_calc.smoothing = 1.0e-3
 dTdZ_calc.petsc_options.delValue("ksp_monitor")
 
-
 # %% [markdown]
-# ### System set-up 
-# Create solvers and set boundary conditions
+# ### System set-up (Stokes)
+# 
+# In the Extended Boussinesq Approximation, the conservation of mass is expressed as: 
+# \begin{aligned}
+# \nabla \cdot \vec u = 0.
+# \end{aligned}
+# While the conservation of momentum is given as: 
+# \begin{aligned}
+# \nabla \cdot [\eta (\nabla \vec u + \nabla \vec u^T)] - \nabla p - Ra g \bar \alpha T= 0.
+# \end{aligned}
+# The deviatoric strain tensor, $\tau$, is: 
+# \begin{aligned}
+# \tau = 2 \eta \dot \epsilon = \eta (\nabla \vec u + \nabla \vec u^T) 
+# \end{aligned}
+# 
 
 # %%
-# Create Stokes object
+# Create Stokes solver
 
 stokes = Stokes(
     meshbox,
@@ -136,14 +157,14 @@ stokes = Stokes(
     solver_name="stokes",
 )
 
-# try these
-#stokes.petsc_options['pc_type'] = 'lu' # lu if linear
+''' petsc options '''
+stokes.tolerance = tol
+# stokes.petsc_options["ksp_monitor"] = None
+# stokes.petsc_options['pc_type'] = 'lu'
 # stokes.petsc_options["snes_max_it"] = 1000
-#stokes.tolerance = 1.0e-3
 
 # stokes.petsc_options["snes_atol"] = 1e-6
 # stokes.petsc_options["snes_rtol"] = 1e-6
-
 
 #stokes.petsc_options["ksp_rtol"]  = 1e-5 # reduce tolerance to increase speed
 
@@ -155,40 +176,53 @@ stokes = Stokes(
 # stokes.petsc_options["fieldsplit_velocity_ksp_monitor"] = None
 # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"] = 1.0e-6
 # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1.0e-2
-# stokes.petsc_options.delValue("pc_use_amat")
 
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
 stokes.constitutive_model.Parameters.viscosity=viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
 
-
-sol_vel = sympy.Matrix([0., 0.])
-
-
 # Free-slip boundary conditions
-stokes.add_dirichlet_bc(sol_vel, "Left", [0])
-stokes.add_dirichlet_bc(sol_vel, "Right", [0])
-stokes.add_dirichlet_bc(sol_vel, "Top", [1])
-stokes.add_dirichlet_bc(sol_vel, "Bottom", [1])
+stokes.add_dirichlet_bc((0.0,), "Left", (0,))
+stokes.add_dirichlet_bc((0.0,), "Right", (0,))
+stokes.add_dirichlet_bc((0.0,), "Top", (1,))
+stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 
-
-#### buoyancy_force = rho0 * (1 + (beta * deltaP) - (alpha * deltaT)) * gravity
-# buoyancy_force = (1 * (1. - (1 * (t_soln.sym[0] - tempMin)))) * -1
-buoyancy_force = Ra * t_soln.sym[0]
+buoyancy_force = Ra * alphaBar * t_soln.sym[0]
 stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 
+# %% [markdown]
+# ### System set-up (Advection-Diffusion)
+# In the EBA formulation, the conservation of energy in terms of the total temperature, T, is expressed as:
+# 
+# \begin{aligned}
+# \frac{DT}{Dt} - \frac{Di \bar \alpha}{\bar c_p}\vec g \cdot \vec u T = \frac {1} {\bar c_p} \nabla \cdot (\bar k \nabla T) + \frac{Di}{Ra} \frac{1}{\bar c_p} \phi
+# \end{aligned}
+
 # %%
-# Create adv_diff object
+# Create adv_diff solver
 
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
-    V_fn=v_soln,
+    V_Field=v_soln,
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
-adv_diff.constitutive_model.Parameters.diffusivity = k
+adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
+adv_diff.constitutive_model.Parameters.diffusivity = k/cp 
+
+# add source terms needed in the EBA case
+#viscous dissipation term
+visc_diss = 2*viscosity*stokes.strainrate.norm()**2 
+#visc_diss = 2*viscosity*2*(stokes._Einv2**2)  # equivalent to the one above
+
+
+# adiabatic heating term
+adiab_heat = (Di*alphaBar/cp)*v_soln.sym[1]*t_soln.sym[0] 
+#adiab_heat = (Di*alpha_bar/c_p)*v_soln.sym[1]*(t_soln.sym[0] + T_s) # TALA case
+
+# add source terms based needed for the EBA case as sympy expressions
+adv_diff.f = (Di/(Ra*cp))*visc_diss - adiab_heat 
 
 adv_diff.theta = 0.5
 
@@ -197,10 +231,15 @@ adv_diff.add_dirichlet_bc(1.0, "Bottom")
 adv_diff.add_dirichlet_bc(0.0, "Top")
 
 adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 5
+adv_diff.adv_diff_slcn_problem_description() # need to run this? 
+
+# %%
+display(sympy.simplify(2*viscosity*stokes.strainrate.norm()**2))
+display(2*viscosity*2*(stokes._Einv2**2))
 
 # %% [markdown]
 # ### Set initial temperature field 
-#
+# 
 # The initial temperature field is set to a sinusoidal perturbation. 
 
 # %%
@@ -283,7 +322,8 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
         #pv.global_theme.jupyter_backend = "panel"
         pv.global_theme.smooth_shading = True
 
-        pvmesh = pv.read(outDir+"Convection_mesh.vtk")
+        meshbox.vtk("tmp_box_mesh.vtk")
+        pvmesh = pv.read("tmp_box_mesh.vtk")
 
         velocity = np.zeros((meshbox.data.shape[0], 3))
         velocity[:, 0] = uw.function.evaluate(v_field.sym[0], meshbox.data)
@@ -367,95 +407,14 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
         
 plotFig(meshbox, t_soln, v_soln, "T", save_fname = None, with_arrows = False, cmap = "coolwarm")
 
-# %%
-def plot_T_mesh(filename):
-
-    if uw.mpi.size == 1:
-
-        import numpy as np
-        import pyvista as pv
-        import vtk
-
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "pythreejs"
-        pv.global_theme.smooth_shading = True
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-        pvmesh = pv.read(outDir+"Convection_mesh.vtk")
-
-        velocity = np.zeros((meshbox.data.shape[0], 3))
-        velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
-        velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
-
-        pvmesh.point_data["V"] = velocity / 333
-        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
-
-        # point sources at cell centres
-
-        cpoints = np.zeros((meshbox._centroids.shape[0] // 4, 3))
-        cpoints[:, 0] = meshbox._centroids[::4, 0]
-        cpoints[:, 1] = meshbox._centroids[::4, 1]
-        cpoint_cloud = pv.PolyData(cpoints)
-
-        pvstream = pvmesh.streamlines_from_source(
-            cpoint_cloud,
-            vectors="V",
-            integrator_type=45,
-            integration_direction="forward",
-            compute_vorticity=False,
-            max_steps=25,
-            surface_streamlines=True,
-        )
-
-        points = np.zeros((t_soln.coords.shape[0], 3))
-        points[:, 0] = t_soln.coords[:, 0]
-        points[:, 1] = t_soln.coords[:, 1]
-
-        point_cloud = pv.PolyData(points)
-
-        with meshbox.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
-
-        pl = pv.Plotter()
-
-        pl.add_mesh(
-            pvmesh,
-            cmap="coolwarm",
-            edge_color="Gray",
-            show_edges=True,
-            scalars="T",
-            use_transparency=False,
-            opacity=0.5,
-        )
-
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
-
-        pl.add_mesh(pvstream, opacity=0.4)
-
-        pl.remove_scalar_bar("T")
-        pl.remove_scalar_bar("V")
-
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
-        # pl.show()
-        pl.close()
-
-        pvmesh.clear_data()
-        pvmesh.clear_point_data()
-
-        pv.close_all()
-
 # %% [markdown]
 # #### RMS velocity
 # The root mean squared velocity, $v_{rms}$, is defined as: 
-#
-#
+# 
 # \begin{aligned}
 # v_{rms}  =  \sqrt{ \frac{ \int_V (\mathbf{v}.\mathbf{v}) dV } {\int_V dV} }
 # \end{aligned}
-#
+# 
 # where $\bf{v}$ denotes the velocity field and $V$ is the volume of the box.
 
 # %%
@@ -466,29 +425,29 @@ def v_rms(mesh = meshbox, v_solution = v_soln):
     v_rms = math.sqrt(uw.maths.Integral(mesh, v_solution.fn.dot(v_solution.fn)).evaluate())
     return v_rms
 
-#print(f'initial v_rms = {v_rms()}')
+# print(f'initial v_rms = {v_rms()}')
 
 # %% [markdown]
 # #### Surface integrals
 # Since there is no uw3 function yet to calculate the surface integral, we define one.  \
 # The surface integral of a function, $f_i(\mathbf{x})$, is approximated as:  
-#
+# 
 # \begin{aligned}
 # F_i = \int_V f_i(\mathbf{x}) S(\mathbf{x})  dV  
 # \end{aligned}
-#
+# 
 # With $S(\mathbf{x})$ defined as an un-normalized Gaussian function with the maximum at $z = a$  - the surface we want to evaluate the integral in (e.g. z = 1 for surface integral at the top surface):
-#
+# 
 # \begin{aligned}
 # S(\mathbf{x}) = exp \left( \frac{-(z-a)^2}{2\sigma ^2} \right)
 # \end{aligned}
-#
+# 
 # In addition, the full-width at half maximum is set to 1/res so the standard deviation, $\sigma$ is calculated as: 
-#
+# 
 # \begin{aligned}
 # \sigma = \frac{1}{2}\frac{1}{\sqrt{ 2 log 2}}\frac{1}{res} 
 # \end{aligned}
-#
+# 
 
 # %%
 # function for calculating the surface integral 
@@ -511,8 +470,14 @@ sdev = 0.5*(1/math.sqrt(2*math.log(2)))*(1/res)
 up_surface_defn_fn = sympy.exp(-((z - 1)**2)/(2*sdev**2)) # at z = 1
 lw_surface_defn_fn = sympy.exp(-(z**2)/(2*sdev**2)) # at z = 0
 
+# %%
+# functions for calculating the viscous dissipation and adiabatic heating integrals 
+# used for checking - they should be equal
+visc_diss_int_calc = uw.maths.Integral(meshbox, (Di/Ra)*visc_diss)
+adiab_heat_int_calc = uw.maths.Integral(meshbox, adiab_heat)
+
 # %% [markdown]
-# ### Main simulation loop
+# ### Main simulation loop parameters
 
 # %%
 t_step = 0
@@ -521,6 +486,8 @@ time = 0.
 timeVal =  np.zeros(nsteps)*np.nan      # time values
 vrmsVal =  np.zeros(nsteps)*np.nan      # v_rms values 
 NuVal =  np.zeros(nsteps)*np.nan        # Nusselt number values
+viscDissVal = np.zeros(nsteps)*np.nan   # integral of viscous dissipation values
+adiabHeatVal = np.zeros(nsteps)*np.nan  # integral of adiabatic heating values 
 
 # %%
 #### Convection model / update in time
@@ -534,7 +501,7 @@ while t_step < nsteps:
     timeVal[t_step] = time
 
     stokes.solve(zero_init_guess=True) # originally True
-    delta_t = 0.5 * stokes.estimate_dt() # originally 0.5
+    delta_t = 0.5 * stokes.estimate_dt()
     adv_diff.solve(timestep=delta_t, zero_init_guess=False) # originally False
 
     # calculate Nusselt number
@@ -545,6 +512,10 @@ while t_step < nsteps:
     Nu = -up_int/lw_int
 
     NuVal[t_step] = -up_int/lw_int
+
+    # calculate the integrals of viscous dissipation and adiabatic heating
+    viscDissVal[t_step] = visc_diss_int_calc.evaluate()
+    adiabHeatVal[t_step] = adiab_heat_int_calc.evaluate()
 
     # stats then loop
     tstats = t_soln.stats()
@@ -557,18 +528,36 @@ while t_step < nsteps:
         ''' save mesh variables together with mesh '''
         if t_step % save_every == 0:
             print("Saving checkpoint for time step: ", t_step)
-            meshbox.petsc_save_checkpoint(outputPath=outDir, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
+            meshbox.write_timestep_xdmf(filename = outfile, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
 
 
-    # early stopping criterion
+   # early stopping criterion
     if t_step > 1 and abs((NuVal[t_step] - NuVal[t_step - 1])/NuVal[t_step]) < epsilon_lr:
         break
 
     t_step += 1
     time   += delta_t
 
+
 # save final mesh variables in the run 
-meshbox.petsc_save_checkpoint(outputPath=outDir, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
+os.makedirs("../EBA_meshes", exist_ok = True)
+
+expt_name = "EBA_Ra1e4_res" + str(res)
+savefile = "{}_ts{}.h5".format(expt_name, t_step)
+
+# save final mesh variables in the run 
+meshbox.write_timestep_xdmf(filename = outfile, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
+
+# %%
+# calculate the volumne integral of viscous dissipation and adiabatic heating
+
+visc_diss_int   = visc_diss_int_calc.evaluate()
+adiab_heat_int  = adiab_heat_int_calc.evaluate()
+
+# both should be close
+
+if uw.mpi.rank == 0:
+    print(visc_diss_int, adiab_heat_int)
 
 # %%
 if uw.mpi.rank == 0:
@@ -577,14 +566,14 @@ if uw.mpi.rank == 0:
         fig,ax = plt.subplots(dpi = 100)
 
         #ax.hlines(42.865, 0, 2000, linestyle = "--", linewidth = 0.5, color = "gray", label = r"Benchmark $v_{rms}$")
-        ax.plot(np.arange((~np.isnan(vrmsVal)).sum()), 
-                NuVal[~np.isnan(vrmsVal)], 
+        ax.plot(np.arange((~np.isnan(NuVal)).sum()), 
+                NuVal[~np.isnan(NuVal)], 
                 color = "k", 
                 label = str(res) + " x " + str(res))
 
         ax.legend()
         ax.set_xlabel("Time step")
-        ax.set_ylabel(r"$v_{rms}$", color = "k")
+        ax.set_ylabel(r"$Nu$", color = "k")
 
         #ax.set_xlim([0, 2000])
         #ax.set_ylim([0, 100])
@@ -593,13 +582,14 @@ if uw.mpi.rank == 0:
 # Calculate benchmark values
 if uw.mpi.rank == 0:
     print("RMS velocity at the final time step is {}.".format(v_rms()))
+    print("Nusselt number at the final time step is {}.".format(Nu))
 
 # %% [markdown]
-# ### Post-run analysis
-#
+# ### Post-run analysis - change to EBA values
+# 
 # **Benchmark values**
 # The loop above outputs $v_{rms}$ as a general statistic for the system. For further comparison, the benchmark values for the RMS velocity, $v_{rms}$, Nusselt number, $Nu$, and non-dimensional gradients at the cell corners, $q_1$ and $q_2$, are shown below for different Rayleigh numbers. All benchmark values shown below were determined in Blankenbach *et al.* 1989 by extroplation of numerical results. 
-#
+# 
 # | $Ra$ | $v_{rms}$ | $Nu$ | $q_1$ | $q_2$ |
 # | ------------- |:-------------:|:-----:|:-----:|:-----:|
 # | 10$^4$ | 42.865 | 4.884 | 8.059 | 0.589 |
@@ -607,7 +597,9 @@ if uw.mpi.rank == 0:
 # | 10$^6$ | 833.990 | 21.972 | 45.964 | 0.877 |
 
 # %%
-# set-up variables to use in calculating the benchmark values 
+# some things to set-up before post-processing
+
+# set expression for calculating sigma_zz
 sigma_zz_fn = stokes.stress[1, 1]
 
 dTdZ_calc.solve() # recalculate gradient of T along Z
@@ -615,7 +607,7 @@ dTdZ_calc.solve() # recalculate gradient of T along Z
 # %% [markdown]
 # ### Calculate the $Nu$ value
 # The Nusselt number is defined as: 
-#
+# 
 # \begin{aligned}
 # Nu  =   -h\frac{ \int_{0}^{l} \partial_{z}T(x, z = h) dx} {\int_{0}^{l} T(x, z = 0) dx} 
 # \end{aligned}
@@ -638,17 +630,18 @@ if uw.mpi.rank == 0:
 #    
 # Note that these values depend on the non-dimensional temperature gradient in the vertical direction, $\frac{\partial T}{\partial z}$.
 # These gradients are evaluated at the following points:
-#
+# 
 # $q_1$ at $x=0$, $z=h$; $q_2$ at $x=l$, $z=h$;
-#
+# 
 # $q_3$ at $x=l$, $z=0$; $q_4$ at $x=0$, $z=0$.   
 
 # %%
 # calculate q values which depend on the temperature gradient fields
 
-q1 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0., 0.999999*boxHeight]]))[0]
-q2 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0.999999*boxLength, 0.999999*boxHeight]]))[0]
-q3 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0.999999*boxLength, 0.]]))[0]
+# NOTE: for quadratic elements, may need to set boundary value (e.g. boxHeight) to 0.99999*value (e.g. 0.9999*boxHeight)
+q1 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0., boxHeight]]))[0]
+q2 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[boxLength, boxHeight]]))[0]
+q3 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[boxLength, 0.]]))[0]
 q4 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0., 0.]]))[0]
 
 if uw.mpi.rank == 0:
@@ -658,7 +651,7 @@ if uw.mpi.rank == 0:
 
 # %% [markdown]
 # ### Calculate the stress for comparison with benchmark value
-#
+# 
 # The stress field for whole box in dimensionless units (King 2009) is:
 # \begin{equation}
 # \tau_{ij} = \eta \frac{1}{2} \left[ \frac{\partial v_j}{\partial x_i} + \frac{\partial v_i}{\partial x_j}\right].
@@ -670,8 +663,7 @@ if uw.mpi.rank == 0:
 # This is calculated below.
 
 # %%
-# projection for the stress in the zz direction
-x, y = meshbox.X
+# projection object for the stress in the zz direction
 
 stress_calc = uw.systems.Projection(meshbox, sigma_zz)
 stress_calc.uw_function = sigma_zz_fn
@@ -681,15 +673,15 @@ stress_calc.solve()
 
 # %% [markdown]
 # The vertical normal stress is dimensionalised as: 
-#
+# 
 # $$
 #     \sigma_{t} = \frac{\eta_0 \kappa}{\rho g h^2}\tau _{zz} \left( x, z=h\right)
 # $$
-#
+# 
 # where all constants are defined below. 
-#
+# 
 # Finally, we calculate the topography defined using $h = \sigma_{top} / (\rho g)$. The topography of the top boundary calculated in the left and right corners as given in Table 9 of Blankenbach et al 1989 are:
-#
+# 
 # | $Ra$          |    $\xi_1$  | $\xi_2$  |  $x$ ($\xi = 0$) |
 # | ------------- |:-----------:|:--------:|:--------------:|
 # | 10$^4$  | 2254.02   | -2903.23  | 0.539372          |
@@ -728,8 +720,8 @@ def calculate_topography(coord): # only coord has local scope
 
 # %%
 # topography at the top corners 
-e1 = calculate_topography(np.array([[0, 0.999999*boxHeight]]))
-e2 = calculate_topography(np.array([[0.999999*boxLength, 0.999999*boxHeight]]))
+e1 = calculate_topography(np.array([[0, boxHeight]]))
+e2 = calculate_topography(np.array([[boxLength, boxHeight]]))
 
 # calculate the x-coordinate with zero stress
 with meshbox.access():
@@ -746,9 +738,3 @@ if uw.mpi.rank == 0:
     print("x where topo = 0 is at {0:.6f}".format(min_abs_topo_coord[0]))
 
 
-
-# %%
-
-# %%
-
-# %%

@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.14.7
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -14,7 +14,9 @@
 
 # # Spiegelman et al, notch-deformation benchmark
 #
-# This example is for the notch-localization test of Spiegelman et al. For which they supply a geometry file which gmsh can use to construct meshes at various resolutions. NOTE: we are just demonstrating the mesh here, not the solver configuration / benchmarking.
+# This example is for the notch-localization test of [Spiegelman et al., 2016](https://agupubs.onlinelibrary.wiley.com/doi/full/10.1002/2015GC006228) For which they supply a geometry file which gmsh can use to construct meshes at various resolutions. The same setup is used in [Fraters et al., 2018](https://academic.oup.com/gji/article/218/2/873/5475649)
+#
+#
 #
 # The `.geo` file is provided and we show how to make this into a `.msh` file and
 # how to read that into a `uw.discretisation.Mesh` object. The `.geo` file has header parameters to control the mesh refinement, and we provide a coarse version and the original version.
@@ -33,9 +35,7 @@ import os
 os.makedirs("meshes", exist_ok=True)
 
 if uw.mpi.size == 1:
-    os.makedirs("output", exist_ok=True)
-else:
-    os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
+    os.makedirs('./output/SpiegelmanBenchmark/', exist_ok=True)
 
 
 os.environ["UW_TIMING_ENABLE"] = "1"
@@ -60,9 +60,7 @@ if uw_testing_level:
         pass
 
 # -
-options = PETSc.Options()
-options["dm_adaptor"] = "pragmatic"
-
+# ### Set up the mesh
 
 from underworld3.cython import petsc_discretisation
 
@@ -221,19 +219,40 @@ if uw.mpi.rank == 0:
 
     gmsh.model.mesh.generate(2)
 
-    gmsh.write(f"./meshes/notch_mesh{problem_size}.msh")
+    gmsh.write(f"./output/SpiegelmanBenchmark/notch_mesh{problem_size}.msh")
     gmsh.finalize()
 # -
 
 
+from underworld3 import timing
+timing.reset()
+timing.start()
+
+# ### Import mesh into UW and visualise
+# - Also
+
 mesh1 = uw.discretisation.Mesh(
-    f"./meshes/notch_mesh{problem_size}.msh",
+    f"./output/SpiegelmanBenchmark/notch_mesh{problem_size}.msh",
     simplex=True,
     qdegree=3,
     markVertices=False,
     useRegions=True,
     useMultipleTags=True,
 )
+
+# +
+### stokes mesh vars
+v_soln = uw.discretisation.MeshVariable(r"U", mesh1, mesh1.dim, degree=2)
+p_soln = uw.discretisation.MeshVariable(r"P", mesh1, 1, degree=1, continuous=True)
+p_null = uw.discretisation.MeshVariable(r"P2", mesh1, 1, degree=1, continuous=True)
+
+### model parameters for visualisation
+edot = uw.discretisation.MeshVariable(
+    r"\dot\varepsilon", mesh1, 1, degree=1, continuous=True
+)
+visc = uw.discretisation.MeshVariable(r"\eta", mesh1, 1, degree=1, continuous=True)
+stress = uw.discretisation.MeshVariable(r"\sigma", mesh1, 1, degree=1, continuous=True)
+# -
 
 if uw.mpi.size == 1:
     import numpy as np
@@ -248,8 +267,8 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    mesh1.vtk("tmp_notch_msh.vtk")
-    pvmesh = pv.read("tmp_notch_msh.vtk")
+    mesh1.vtk('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
+    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
 
     pl = pv.Plotter()
 
@@ -263,21 +282,65 @@ if uw.mpi.size == 1:
 
     pl.show(cpos="xy")
 
+# #### Set up the scaling of the model
+
+# +
+# import unit registry to make it easy to convert between units
+u = uw.scaling.units
+
+### make scaling easier
+ndim, nd = uw.scaling.non_dimensionalise, uw.scaling.non_dimensionalise
+dim  = uw.scaling.dimensionalise 
+
+refLength     = 10e3 ### height of box
+g             = 10.
+mu            = 1e21
+T_0           = 273.15
+T_1           = 1573.15
+dT            = T_1 - T_0
+rho0          = 2.7e3
+refVelocity   = (0.0025 * u.meter / u.year).to(u.meter/u.second).m
+
+
+lithoPressure  = rho0 * g * refLength
+
+refTime      = refLength / refVelocity
+
+refViscosity = mu * u.pascal * u.second
+
+
+
+
+KL = refLength    * u.meter
+KT = dT           * u.kelvin
+Kt = refTime      * u.second
+KM = refViscosity * KL * Kt
+
+
+
+### create unit registry
+scaling_coefficients                    = uw.scaling.get_coefficients()
+scaling_coefficients["[length]"] = KL
+scaling_coefficients["[time]"] = Kt
+scaling_coefficients["[mass]"]= KM
+scaling_coefficients["[temperature]"]= KT
+scaling_coefficients
+# -
+
+ref_SR = dim(1, 1/u.second).m
+
+# #### Add in a swarm
+
+# +
 swarm = uw.swarm.Swarm(mesh=mesh1)
-material = uw.swarm.SwarmVariable(
-    "M", swarm, num_components=1, proxy_continuous=False, proxy_degree=0
-)
-swarm.populate(fill_param=1)
+mat = uw.swarm.SwarmVariable(
+    "mat", swarm, size=1, proxy_degree=1)
 
-v_soln = uw.discretisation.MeshVariable(r"U", mesh1, mesh1.dim, degree=2)
-p_soln = uw.discretisation.MeshVariable(r"P", mesh1, 1, degree=1, continuous=True)
-p_null = uw.discretisation.MeshVariable(r"P2", mesh1, 1, degree=1, continuous=True)
+material = uw.swarm.IndexSwarmVariable(
+    'M', swarm, indices=2, proxy_degree=1)
 
-edot = uw.discretisation.MeshVariable(
-    r"\dot\varepsilon", mesh1, 1, degree=1, continuous=True
-)
-visc = uw.discretisation.MeshVariable(r"\eta", mesh1, 1, degree=1, continuous=True)
-stress = uw.discretisation.MeshVariable(r"\sigma", mesh1, 1, degree=1, continuous=True)
+### This produces particles at the centre of cells
+swarm.populate(fill_param=0)
 
 # + [markdown] magic_args="[markdown]"
 # This is how we extract cell data from the mesh. We can map it to the swarm data structure and use this to
@@ -288,19 +351,21 @@ indexSetW = mesh1.dm.getStratumIS("Weak", 100)
 indexSetS = mesh1.dm.getStratumIS("Strong", 101)
 
 
-l = swarm.dm.createLocalVectorFromField("M")
+l = swarm.dm.createLocalVectorFromField("mat")
 lvec = l.copy()
-swarm.dm.restoreField("M")
+swarm.dm.restoreField("mat")
 
-lvec.isset(indexSetW, 0.0)
-lvec.isset(indexSetS, 1.0)
+lvec.isset(indexSetW, 0)
+lvec.isset(indexSetS, 1)
 
-with swarm.access(material):
+with swarm.access(material, mat):
     material.data[:, 0] = lvec.array[:]
+    mat.data[:, 0] = lvec.array[:]
+    print(np.unique(lvec))
 
-# check the mesh if in a notebook / serial
+# check the mesh and material mapping if in a notebook / serial
 
-if True and uw.mpi.size == 1:
+if uw.mpi.size == 1:
     import numpy as np
     import pyvista as pv
     import vtk
@@ -313,7 +378,7 @@ if True and uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read(f"./meshes/notch_mesh{problem_size}.msh")
+    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
 
     pl = pv.Plotter()
 
@@ -355,9 +420,7 @@ if True and uw.mpi.size == 1:
     pl.show(cpos="xy")
 
 
-# ### Check that this mesh can be solved for a simple, linear problem
-
-# Create Stokes object
+# ### Create Stokes object
 
 stokes = uw.systems.Stokes(
     mesh1,
@@ -368,194 +431,68 @@ stokes = uw.systems.Stokes(
 )
 
 
+# ##### Setup the constitutive model
+
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
+
+# #### Boundary conditions
+
 # +
-# Set solve options here (or remove default values
-stokes.petsc_options["ksp_monitor"] = None
-
-stokes.tolerance = 1.0e-6
-stokes.petsc_options["snes_atol"] = 1e-2
-
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"] = 1e-4
-# stokes.petsc_options["fieldsplit_pressure_ksp_type"] = "gmres" # gmres here for bulletproof
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_type"
-] = "gamg"  # can use gasm / gamg / lu here
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_gasm_type"
-] = "basic"  # can use gasm / gamg / lu here
-stokes.petsc_options[
-    "fieldsplit_pressure_pc_gamg_type"
-] = "classical"  # can use gasm / gamg / lu here
-stokes.petsc_options["fieldsplit_pressure_pc_gamg_classical_type"] = "direct"
-# # stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 5
-# # stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 5
-# # stokes.petsc_options["fieldsplit_pressure_mg_levels_ksp_converged_maxits"] = None
-
-
-# # Fast: preonly plus gasm / gamg / mumps
-# # Robust: gmres plus gasm / gamg / mumps
-
-# stokes.petsc_options["fieldsplit_velocity_pc_type"] = "gamg"
-# # stokes.petsc_options["fieldsplit_velocity_pc_gasm_type"] = "basic" # can use gasm / gamg / lu here
-
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_agg_nsmooths"] = 2
-# stokes.petsc_options["fieldsplit_velocity_mg_levels_ksp_max_it"] = 3
-
-# stokes.petsc_options["fieldsplit_velocity_pc_gamg_esteig_ksp_type"] = "cg"
-stokes.petsc_options["fieldsplit_pressure_pc_gamg_esteig_ksp_type"] = "cg"
-
-# -
-
-
-viscosity_L = 999.0 * material.sym[0] + 1.0
-
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh1.dim)
-stokes.constitutive_model.Parameters.viscosity = viscosity_L
-stokes.saddle_preconditioner = 1 / viscosity_L
-stokes.penalty = 0.1
-
 # Velocity boundary conditions
-stokes.add_dirichlet_bc(1.0, "Left", 0)
-stokes.add_dirichlet_bc(0, "Left", 1)
-stokes.add_dirichlet_bc(-1.0, "Right", 0)
-stokes.add_dirichlet_bc(0, "Right", 1)
-stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
-# stokes.add_dirichlet_bc((0.0,), "Top", (1,))
+vel = nd(0.0025 * u.meter / u.year)
 
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
+stokes.add_dirichlet_bc((vel,0.0), "Left")
+stokes.add_dirichlet_bc((-vel,0.0), "Right")
+# stokes.add_dirichlet_bc((sympy.oo,sympy.oo), "Top")
 
-stokes.bodyforce = sympy.Matrix([0, -1])
-
-
-# +
-x, y = mesh1.X
-
-res = 0.1
-hw = 1000.0 / res
-surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)
-base_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
-edges_fn = sympy.exp(-((x - 2) ** 2) / 0.025) + sympy.exp(-((x + 2) ** 2) / 0.025)
-# stokes.bodyforce -= 10000.0 * surface_defn_fn * v_soln.sym[1] * mesh1.CoordinateSystem.unit_j
 # -
 
-# This is a strategy to obtain integrals over the surface (etc)
+
+# #### Bodyforce of the model
+
+# +
+nd_gravity = nd(9.81*u.meter/u.second**2)
+nd_density = nd(2.7e3*u.kilogram/u.meter**3)
+
+stokes.bodyforce = sympy.Matrix([0, -1*nd_gravity*nd_density])
+# -
 
 
-def surface_integral(mesh, uw_function, mask_fn):
+# ##### Setup projections of model parameters to save on the mesh
 
-    calculator = uw.maths.Integral(mesh, uw_function * mask_fn)
-    value = calculator.evaluate()
-
-    calculator.fn = mask_fn
-    norm = calculator.evaluate()
-
-    integral = value / norm
-
-    return integral
-
-
-# %%
 strain_rate_calc = uw.systems.Projection(mesh1, edot)
-strain_rate_calc.uw_function = stokes._Einv2
+strain_rate_calc.uw_function = stokes.Unknowns.Einv2
 strain_rate_calc.smoothing = 1.0e-3
 
 viscosity_calc = uw.systems.Projection(mesh1, visc)
-viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
+viscosity_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
 viscosity_calc.smoothing = 1.0e-3
 
 stress_calc = uw.systems.Projection(mesh1, stress)
-S = stokes.stress_deviator
-stress_calc.uw_function = (
-    sympy.simplify(sympy.sqrt(((S**2).trace()) / 2)) - p_soln.sym[0]
-)
+# S = stokes.stress_deviator
+# stress_calc.uw_function = (
+#     sympy.simplify(sympy.sqrt(((S**2).trace()) / 2)) - p_soln.sym[0]
+# )
 stress_calc.smoothing = 1.0e-3
 
-# +
-# First, we solve the linear problem
 
-stokes.tolerance = 1e-4
-stokes.petsc_options["snes_atol"] = 1.0e-2
+# #### create function to plot the model strain rate
 
-# stokes.petsc_options["ksp_rtol"]  = 1.0e-4
-# stokes.petsc_options["ksp_atol"]  = 1.0e-8
-
-# stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
-# stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
-
-from underworld3 import timing
-
-timing.reset()
-timing.start()
-stokes.solve(zero_init_guess=True)
-timing.print_table()
-
-if uw.mpi.rank == 0:
-    print("Linear solve complete", flush=True)
-
-
-# +
-
-C0 = 150
-for i in range(10):
-
-    mu = 0.75
-    C = C0 + (1.0 - i / 9) * 15.0
-    if uw.mpi.rank == 0:
-        print(f"Mu - {mu}, C = {C}", flush=True)
-
-    tau_y = C + mu * p_soln.sym[0]
-    viscosity_L = 999.0 * material.sym[0] + 1.0
-    viscosity_Y = tau_y / (2 * stokes._Einv2 + 1.0 / 1000)
-    viscosity = 1 / (1 / viscosity_Y + 1 / viscosity_L)
-
-    stokes.constitutive_model.Parameters.viscosity = viscosity
-    stokes.saddle_preconditioner = 1 / viscosity
-
-    # +
-    # Now use that as the guess for a better job
-
-    # stokes.tolerance = 1e-4
-    # stokes.petsc_options["ksp_rtol"]  = 1.0e-4
-    # stokes.petsc_options["ksp_atol"]  = 1.0e-8
-
-    # stokes.petsc_options["fieldsplit_pressure_ksp_rtol"]  = 1.0e-5
-    # stokes.petsc_options["fieldsplit_velocity_ksp_rtol"]  = 1.0e-5
-    # stokes.snes.atol = 1e-3
-
-    timing.reset()
-    timing.start()
-    stokes.solve(zero_init_guess=False)
-    timing.print_table()
-    if uw.mpi.rank == 0:
-        print(f"Completed: Mu - {mu}, C = {C}", flush=True)
-# -
-
-# %%
-viscosity_calc.uw_function = stokes.constitutive_model.Parameters.viscosity
-stress_calc.uw_function = (
-    2 * stokes.constitutive_model.Parameters.viscosity * stokes._Einv2
-)
-
-# %%
-strain_rate_calc.solve()
-viscosity_calc.solve()
-stress_calc.solve()
-
-# +
-## Save data ...
-
-savefile = f"output/notched_beam_mesh{problem_size}.h5"
-mesh1.save(savefile)
-v_soln.save(savefile)
-p_soln.save(savefile)
-# mesh1.generate_xdmf(savefile)
-# -
-
-# check the mesh if in a notebook / serial
-
-if uw.mpi.size == 1:
+def plotFig():
     import numpy as np
     import pyvista as pv
     import vtk
+    
+    stress_calc.uw_function = (
+        2 * visc_fn * stokes.Unknowns.Einv2
+    )
+
+    viscosity_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
+    
+    viscosity_calc.solve()
+    strain_rate_calc.solve()
+    stress_calc.solve()
 
     pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
@@ -565,20 +502,19 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    mesh1.vtk("tmp_notch.vtk")
-    pvmesh = pv.read("tmp_notch.vtk")
+    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
 
     points = np.zeros((mesh1._centroids.shape[0], 3))
     points[:, 0] = mesh1._centroids[:, 0]
     points[:, 1] = mesh1._centroids[:, 1]
 
-    pvmesh.point_data["sfn"] = uw.function.evaluate(
-        surface_defn_fn, mesh1.data, mesh1.N
-    )
+    # pvmesh.point_data["sfn"] = uw.function.evaluate(
+    #     surface_defn_fn, mesh1.data, mesh1.N
+    # )
     pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh1.data)
     pvmesh.point_data["edot"] = uw.function.evaluate(edot.sym[0], mesh1.data)
     # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh1.data, mesh1.N)
-    pvmesh.point_data["eta"] = uw.function.evaluate(visc.sym[0], mesh1.data)
+    pvmesh.point_data["eta"] = visc.rbf_interpolate(visc.coords, nnn=1) #uw.function.evaluate(visc.sym[0], mesh1.data)
     pvmesh.point_data["str"] = uw.function.evaluate(stress.sym[0], mesh1.data)
 
     with mesh1.access():
@@ -601,57 +537,207 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(
         pvmesh,
-        cmap="RdYlGn",
-        scalars="edot",
+        cmap="jet",
+        scalars="eta",
         edge_color="Grey",
-        # show_edges=True,
+        show_edges=True,
         use_transparency=False,
-        clim=[0.1, 1.25],
+        # clim=[0, 10],
         opacity=1.0,
+        log_scale=True
     )
+    
+    # pl.add_scalar_bar('edot', interactive=True, vertical=False,
+    #                        title_font_size=35,
+    #                        label_font_size=30,
+    #                        outline=True, fmt='%10.5f')
 
-    pl.add_points(
-        point_cloud,
-        cmap="coolwarm",
-        render_points_as_spheres=False,
-        point_size=5,
-        opacity=0.1,
-    )
+    # pl.add_points(
+    #     point_cloud,
+    #     cmap="coolwarm",
+    #     render_points_as_spheres=False,
+    #     point_size=5,
+    #     opacity=0.1,
+    # )
+
 
     pl.show(cpos="xy")
 
-# # What works:
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.0 (step from C=1500)
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.3
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.6
-#
-# Coarse mesh, small penalty (0.1) - C >= 100, mu 0.9
-#
-# Coarse mesh, small penalty (1.0) - C >= 75, mu 0.9
-#
+# #### Set solve options here 
+# or remove default values
 
 # +
-# %%
-# surface_defn_fn = sympy.exp(-((y - 0) ** 2) * hw)
-# p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
-# print(f"Upper surface average P = {p_surface_ave}")
+# stokes.petsc_options["ksp_monitor"] = None
+
+if uw.mpi.size == 1:
+    stokes.petsc_options['pc_type'] = 'lu'
 
 # +
-# surface_defn_fn = sympy.exp(-((y + 1) ** 2) * hw)
-# p_surface_ave = surface_integral(mesh1, p_soln.sym[0], surface_defn_fn)
-# print(f"Lower surface average P = {p_surface_ave}")
+stokes.petsc_options["snes_max_it"] = 500
 
+### see the SNES output
+stokes.petsc_options["snes_converged_reason"] = None
+
+### sets the relative tolerance
+stokes.tolerance = 1e-12
+# -
+
+# #### Initial linear solve
 
 # +
-# %%
-# surface_defn_fn = sympy.exp(-((y + 0.666) ** 2) * hw)
-# p_surface_ave = surface_integral(mesh1, edot.sym[0], surface_defn_fn)
-# print(f"Edot at 0.666 = {p_surface_ave}")
+### background viscosities
+visc_top    = nd(1e24*u.pascal*u.second)
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+# -
+
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
+
+# +
+# First, we solve the linear problem
+
+
+# stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+
+
+# stokes.penalty = 0.1
+
+
+
+stokes.solve(zero_init_guess=True, picard=0)
+
+if uw.mpi.rank == 0:
+    print("Linear solve complete", flush=True)
 # -
 
 
 if uw.mpi.size == 1:
-    pvmesh.point_data["eta"].min(), pvmesh.point_data["eta"].max()
+    plotFig()
+
+# #### Add in VP material
+# - Using the harmonic mean method
+# - Uses the linear solve as the starting point
+#
+# - First solve in von Mises only
+
+# +
+### top
+nd_C = nd(1e8*u.pascal)
+
+tau_y = nd_C 
+
+eta_plastic = tau_y / ( 2* (stokes.Unknowns.Einv2 + 1.0e-18) )
+
+### background viscosities
+visc_top = 1/((1/nd(1e24*u.pascal*u.second)) + (1/ eta_plastic))
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+# -
+
+
+eta_plastic
+
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
+
+
+
+stokes.solve(zero_init_guess=False)
+
+
+if uw.mpi.size ==1:
+    plotFig()
+
+if uw.mpi.size ==1:
+    import matplotlib.pyplot as plt
+    with mesh1.access(visc):
+        plt.scatter(visc.coords[:,0], visc.coords[:,1], c = visc.data)
+
+# ### Add in depth depedency
+# - Depth-dependent von Mises (lithostatic pressure only)
+
+# +
+nd_C = nd(1e8*u.pascal)
+
+phi = 30 ### in degrees
+fc = np.sin(np.deg2rad(phi))
+
+### lithoP = Rho0 * g * h
+nd_lithoP = nd_density * nd_gravity * -1*mesh1.X[1] #### 0 to -1 in depth
+
+tau_y_dd_vm = nd_C * np.cos(np.deg2rad(phi)) + (fc * nd_lithoP)
+
+# +
+eta_plastic = tau_y_dd_vm / ( 2* (stokes.Unknowns.Einv2 + 1.0e-18) )
+
+### background viscosities
+visc_top = 1/((1/nd(1e24*u.pascal*u.second)) + (1/ eta_plastic))
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+
+### update constitutive model
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
+
+
+# +
+max_lithoP = (10e3*9.81*2.7e3)
+
+model_max_lithoP = (dim(uw.function.evaluate(nd_lithoP, mesh1.data, mesh1.N), u.pascal).m).max()
+
+#### check if lithostatic pressure is scaled correctly
+np.isclose(max_lithoP, model_max_lithoP)
+# -
+
+stokes.solve(zero_init_guess=False, picard=0)
+
+if uw.mpi.size ==1:
+    plotFig()
+
+# ### Now try the full Drucker-Prager yielding term
+# - Depth-dependent von Mises
+# - And the dynamic pressure term from the solve
+
+# +
+nd_C = nd(1e8*u.pascal)
+
+phi = 30 ### in degrees
+fc = np.sin(np.deg2rad(phi))
+
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+visc_top    = nd(1e24*u.pascal*u.second)
+
+### lithoP = Rho0 * g * h
+nd_lithoP = nd_density * nd_gravity * -1*mesh1.X[1] #### 0 to -1 in depth
+
+tau_y_dd_dp = nd_C * np.cos(np.deg2rad(phi)) + ( (fc * nd_lithoP) + p_soln.sym[0] )
+
+# +
+eta_plastic = tau_y_dd_dp / ( 2* (stokes.Unknowns.Einv2 + 1.0e-18) )
+
+### background viscosities
+visc_top = 1/((1/nd(1e24*u.pascal*u.second)) + (1/ eta_plastic))
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+
+### update constitutive model
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
+
+
+# +
+# stokes.petsc_options['pc_type'] = 'fieldsplit'
+# ### 'lu' doesn't solve with the pressure field included in the yielding equation
+
+# +
+# stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+
+
+stokes.solve(picard=0, zero_init_guess=False)
+# -
+
+
+
+

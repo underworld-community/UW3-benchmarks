@@ -1,11 +1,25 @@
 
 ### ignore Mac file stuff
 *.DS_Store
+
 ### ignore all output files
+### allow some file types in some dirs
 *.vtk
 *.h5
+!/Data/*.h5
 *.msh
+*.xdmf
+!/Data/*.xdmf
+*.xmf
+!/Data/*.xmf
+*.pbin
+*.pdf
+*.jpg
+
 ### ignore certain dirs
-*output*
 *ipynb_checkpoints*
+Working/Cartesian/*/*
+WIP/Cartesian/*
+
+
 
