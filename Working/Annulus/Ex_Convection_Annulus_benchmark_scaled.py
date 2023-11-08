@@ -47,7 +47,11 @@ else:
 
 
 
+# -
 
+
+### number of steps of the model
+nsteps = 31
 
 # +
 ### FS - free slip top, no slip base
@@ -198,8 +202,8 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
 
-    meshball.vtk("ignore_meshball.vtk")
-    pvmesh = pv.read("ignore_meshball.vtk")
+    meshball.vtk(outputPath + "annulus_mesh.vtk")
+    pvmesh = pv.read(outputPath + "annulus_mesh.vtk")
 
     pl = pv.Plotter()
     
@@ -212,11 +216,11 @@ if uw.mpi.size == 1:
     pl.show()
 
 # +
-# Create Stokes object
+### Create stokes
 
 stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshball.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 
 
@@ -227,59 +231,39 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(mesh
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshball,
     u_Field=T_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff")
 
 
 # +
+# Set up the adv diff parameters
+
+# Set some things
+nd_k = nd(kappa * u.meter**2/u.second)
+
+
+
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
+adv_diff.constitutive_model.Parameters.diffusivity = nd_k
+adv_diff.theta = 0.5
+
+
+# nd_IH    = nd(0.02*u.microwatt/u.meter**3) # nd(1e-12 * u.watt/u.kilogram)
+# adv_diff.f = nd_IH
+
+##### fix temp at top and bottom 
+adv_diff.add_dirichlet_bc(T_cmb, meshball.boundaries.Lower.name)
+adv_diff.add_dirichlet_bc(T_surf, meshball.boundaries.Upper.name)
+
+# +
+### Setup the swarm
 swarm = uw.swarm.Swarm(mesh=meshball)
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=True)
-swarm.populate(fill_param=1, layout=uw.swarm.SwarmPICLayout.GAUSS)
+swarm.populate_petsc(2)
 
 with swarm.access(material):
     material.data[:] = 0
     material.data[np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2) <= rInt] = 1
-# -
-
-if uw.mpi.size == 1:
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
-
-    meshball.vtk("ignore_meshball.vtk")
-    pvmesh = pv.read("ignore_meshball.vtk")
-
-    pl = pv.Plotter()
-    
-    with swarm.access('M'):
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
-        
-        point_cloud = pv.PolyData(points)
-        
-        point_cloud.point_data["M"] = material.data.copy()
-        
-    pl.add_points(
-        point_cloud,
-        cmap="coolwarm",
-        render_points_as_spheres=False,
-        point_size=10,
-        opacity=0.66,
-    )
-
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
-
-    pl.show()
 
 # +
 ### assign material viscosity
@@ -287,12 +271,10 @@ if uw.mpi.size == 1:
 mat_viscosity = np.array([UM_visc, LM_visc])
 
 viscosityMat = mat_viscosity[0] * material.sym[0] + mat_viscosity[1] * material.sym[1]
-# -
 
 # Constant visc
 stokes.constitutive_model.Parameters.viscosity = viscosityMat
 
-# +
 nd_density = nd(rho0  * u.kilogram / u.metre**3)
 
 
@@ -304,57 +286,8 @@ nd_alpha = nd(alpha * (1/u.kelvin))
 T_density = nd_density * (1. - (nd_alpha * (T_soln.sym[0] - T_surf)))
 
 # +
-### Temp dependent density
-### density = rho0 * (1 + (beta * deltaP) - (alpha * deltaT))
+### Sort out the boundary conditions
 
-T_density = nd_density * (1. - (nd_alpha * (T_soln.sym[0] - T_surf)))
-
-# +
-nodal_rho_calc = uw.systems.Projection(meshball, density_proj)
-nodal_rho_calc.uw_function = T_density
-nodal_rho_calc.smoothing = 0.
-nodal_rho_calc.petsc_options.delValue("ksp_monitor")
-
-def updateFields(time):
-    ### density
-    nodal_rho_calc.uw_function = T_density
-    nodal_rho_calc.solve(_force_setup=True)
-    ### time
-    with meshball.access(timeField):
-        timeField.data[:,0] = dim(time, u.year).m
-
-
-# +
-A=100
-B=75
-C=50
-D=25
-
-pi=np.pi
-
-Ri=rI
-Ro=rO
-Ti=T_1 # nd(T_1*u.kelvin)
-To=T_0 #nd(T_0*u.kelvin)
-
-
-# +
-initial_T = (r-Ri)/(Ro-Ri)*(To-Ti)+Ti + A*sympy.sin(7*th) + B*sympy.sin(13*th) + C*sympy.cos(0.123*th+pi/3) + D*sympy.cos(0.456*th+pi/6)
-
-
-with meshball.access(T_soln):
-    T_soln.data[:,0] = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N) * u.kelvin)
-    
-    T0 = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N) * u.kelvin)
-    
-rho_0 = uw.function.evaluate(T_density, T_soln.coords, meshball.N) 
-
-with meshball.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshball.data, meshball.N)  # cf radius_fn which is 0->1
-    
-
-
-# +
 radius_fn = sympy.sqrt(meshball.rvec.dot(meshball.rvec))  # normalise by outer radius if not 1.0
 unit_rvec = meshball.X / (radius_fn)
 
@@ -394,6 +327,96 @@ else:
     stokes.add_dirichlet_bc((0.0, 0.0), meshball.boundaries.Lower.name, (0, 1))
 
 # +
+### Visualise the swarm
+
+if uw.mpi.size == 1:
+    import numpy as np
+    import pyvista as pv
+    import vtk
+
+    pv.global_theme.background = "white"
+    pv.global_theme.window_size = [750, 750]
+    pv.global_theme.antialiasing = True
+    pv.global_theme.jupyter_backend = "panel"
+    pv.global_theme.smooth_shading = True
+    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
+    pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
+
+    pv.read(outputPath + "annulus_mesh.vtk")
+
+    pl = pv.Plotter()
+    
+    with swarm.access('M'):
+        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
+        points[:, 0] = swarm.particle_coordinates.data[:, 0]
+        points[:, 1] = swarm.particle_coordinates.data[:, 1]
+        
+        point_cloud = pv.PolyData(points)
+        
+        point_cloud.point_data["M"] = material.data.copy()
+        
+    pl.add_points(
+        point_cloud,
+        cmap="coolwarm",
+        render_points_as_spheres=False,
+        point_size=10,
+        opacity=0.66,
+    )
+
+    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
+    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+
+    pl.show()
+
+# +
+nodal_rho_calc = uw.systems.Projection(meshball, density_proj)
+nodal_rho_calc.uw_function = T_density
+nodal_rho_calc.smoothing = 0.
+nodal_rho_calc.petsc_options.delValue("ksp_monitor")
+
+def updateFields(time):
+    ### density
+    nodal_rho_calc.uw_function = T_density
+    nodal_rho_calc.solve(_force_setup=True)
+    ### time
+    with meshball.access(timeField):
+        timeField.data[:,0] = dim(time, u.year).m
+
+
+# +
+### Set up the initial temp distribution
+
+# +
+A=100
+B=75
+C=50
+D=25
+
+pi=np.pi
+
+Ri=rI
+Ro=rO
+Ti=T_1
+To=T_0 
+
+
+# +
+initial_T = (r-Ri)/(Ro-Ri)*(To-Ti)+Ti + A*sympy.sin(7*th) + B*sympy.sin(13*th) + C*sympy.cos(0.123*th+pi/3) + D*sympy.cos(0.456*th+pi/6)
+
+
+with meshball.access(T_soln):
+    T_soln.data[:,0] = nd(uw.function.evalf(initial_T, T_soln.coords, meshball.N) * u.kelvin)
+    
+    T0 = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N) * u.kelvin)
+    
+rho_0 = uw.function.evaluate(T_density, T_soln.coords, meshball.N) 
+
+with meshball.access(meshr):
+    meshr.data[:, 0] = uw.function.evalf(sympy.sqrt(x**2 + y**2), meshball.data, meshball.N)  # cf radius_fn which is 0->1
+    
+
+
+# +
 # check the mesh if in a notebook / serial
 
 if uw.mpi.size == 1:
@@ -410,8 +433,7 @@ if uw.mpi.size == 1:
 
     # pv.start_xvfb()
 
-    meshball.vtk("ignore_meshball.vtk")
-    pvmesh = pv.read("ignore_meshball.vtk")
+    pv.read(outputPath + "annulus_mesh.vtk")
 
     with meshball.access():
         usol = stokes.u.data.copy()
@@ -442,36 +464,19 @@ if uw.mpi.size == 1:
     # pl.add_points(pdata)
 
     pl.show(cpos="xy")
-# +
-# Create adv_diff object
-
-# Set some things
-nd_k = nd(kappa * u.meter**2/u.second)
-
-
-
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshball.dim)
-adv_diff.constitutive_model.Parameters.diffusivity = nd_k
-adv_diff.theta = 0.5
-
-
-# nd_IH    = nd(0.02*u.microwatt/u.meter**3) # nd(1e-12 * u.watt/u.kilogram)
-# adv_diff.f = nd_IH
 
 
 # -
-##### fix temp at top and bottom 
-adv_diff.add_dirichlet_bc(T_cmb, meshball.boundaries.Lower.name)
-adv_diff.add_dirichlet_bc(T_surf, meshball.boundaries.Upper.name)
-
+# ### Functions
+# - plot figs
+# - save data
 
 def plotFig(var='T',arrowSize=500):    
     import numpy as np
     import pyvista as pv
     import vtk
 
-    meshball.vtk("ignore_meshball.vtk")
-    pvmesh = pv.read("ignore_meshball.vtk")
+    pv.read(outputPath + "annulus_mesh.vtk")
 
     with meshball.access():
         usol = stokes.u.data.copy()
@@ -502,55 +507,36 @@ def plotFig(var='T',arrowSize=500):
     pl.show(cpos="xy")
 
 
+# +
 def saveData(step, outputPath, time):
     
     ### update projections first
     updateFields(time)
+    ### save mesh variables
+    meshball.petsc_save_checkpoint(step, meshVars=[v_soln, p_soln, T_soln, density_proj, timeField], outputPath=outputPath)
+    ### save the swarm
+    swarm.petsc_save_checkpoint('swarm', step, outputPath=outputPath)
     
-    ### save mesh vars
-    fname = f"{outputPath}mesh_{'step_'}{step:02d}.h5"
-    xfname = f"{outputPath}mesh_{'step_'}{step:02d}.xmf"
-    viewer = PETSc.ViewerHDF5().createHDF5(fname, mode=PETSc.Viewer.Mode.WRITE,  comm=PETSc.COMM_WORLD)
 
-    viewer(meshball.dm)
+# -
 
-    ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
-    viewer(stokes.u._gvec)         # add velocity
-    viewer(stokes.p._gvec)         # add pressure
-    viewer(T_soln._gvec)           # add temperature
-    viewer(density_proj._gvec)   # add density
-    # viewer(materialField._gvec)    # add material projection
-    viewer(timeField._gvec)        # add time
-    viewer.destroy()              
-    generateXdmf(fname, xfname)
+# ### PETSc options
+
+if uw.mpi.size == 1:
+    adv_diff.petsc_options['pc_type'] = 'lu'
     
-    # ### save all swarm variables attached to DM
-    # x_swarm_fname = f"{outputPath}swarm_{'step_'}{step:02d}.xmf"
-    # swarm.dm.viewXDMF(x_swarm_fname)
+    stokes.petsc_options['pc_type'] = 'lu'
 
+# ### Solve loop
 
 step = 0
 time = 0.
 time_dim = 0.
 
 # +
-# with meshball.access(v_soln):
-#     print(v_soln.data[np.where(uw.function.evaluate(surface_fn, meshball.data) == 1 )])
-
-# +
-# Check the diffusion part of the solve converges
-adv_diff.petsc_options["ksp_monitor"] = None
-adv_diff.petsc_options["monitor"] = None
-adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 1
-
-adv_diff.petsc_options['pc_type'] = 'lu'
-
-stokes.petsc_options['pc_type'] = 'lu'
-
-# +
 # Convection model / update in time
 
-while step < 31:
+while step < nsteps:
     
     time_dim = dim(time, u.megayear)
 
@@ -579,8 +565,8 @@ while step < 31:
 # -
 
 
-plotFig(var='T')
+plotFig(var='T', arrowSize=1e-2)
 
-plotFig(var='dT')
+plotFig(var='dT', arrowSize=1e-2)
 
 
