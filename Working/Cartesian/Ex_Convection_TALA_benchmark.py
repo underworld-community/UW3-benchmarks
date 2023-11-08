@@ -1,12 +1,12 @@
 # %% [markdown]
 # # King / Blankenbach Benchmark Case 1
-# 
+#
 # ## Isoviscous thermal convection with TALA formulation.
-# 
+#
 # Two-dimensional, compressible, bottom heated, steady isoviscous thermal convection in a 1 x 1 box, see case 1 of [King et al. (2009)](https://doi.org/10.1111/j.1365-246X.2009.04413.x) / [Blankenbach et al. (1989) benchmark](https://academic.oup.com/gji/article/98/1/23/622167).
-# 
+#
 # Keywords: Truncated Anelastic Liquid Approximation, TALA, Convection
-# 
+#
 
 # %%
 import petsc4py
@@ -47,20 +47,20 @@ viscosity = 1
 
 #### run configuration
 tol = 1e-5              ### solver tolerance
-res= 96                 ### x and y res of box
+res=  32                 ### x and y res of box
 nsteps = 2             ### maximum number of time steps to run the first model 
 epsilon_lr = 1e-8       ### criteria for early stopping; relative change of the Nusselt number in between iterations  
-use_checkpoint = True   ### if set to True, use T, p, v fields close to steady-state provided in repo
+use_checkpoint = False   ### if set to True, use T, p, v fields close to steady-state provided in repo
                         ### will also neglect output config below if set to True
 
 ##########
 # parameters needed for saving checkpoints
 # will be ignored if use_checkpoint set to True
-outdir = "/Users/jcgraciosa/Documents/codes/uw3-dev/TALA_test" 
+outdir = "./output/TALA_test" 
 outfile = outdir + "/convection_16"
 save_every = 10
 prev_res = 16           ### if infile is not None, then this should be set to the previous model resolution
-infile = outfile        ### set infile to a value if there's a checkpoint from a previous run that you want to start from
+infile = None        ### set infile to a value if there's a checkpoint from a previous run that you want to start from
 ##########
 
 if use_checkpoint:
@@ -90,11 +90,11 @@ meshbox = uw.meshing.UnstructuredSimplexBox(
 # %% [markdown]
 # ## Reference values 
 # The temperature, T, pressure, p, and density are expressed as a sum of a reference state and a departure from this state:
-# 
+#
 # \begin{aligned}
 # T = \bar T + T'\space \; \; \; p = \bar p + p'  \; \; \;  \rho = \bar \rho (\bar T, \bar p) + \rho'    
 # \end{aligned}
-# 
+#
 # Where the overbarred quantities are the reference states, and the primed quantities are the perturbations. The reference states are temporally static and varies with depth, z.  
 
 # %%
@@ -166,7 +166,7 @@ dTdZ_calc.petsc_options.delValue("ksp_monitor")
 # \begin{aligned}
 # \tau = 2 \eta \dot \epsilon = \eta (\nabla \vec u + \nabla \vec u^T - \frac {2}{3}\nabla \cdot \vec u \bold I) 
 # \end{aligned}
-# 
+#
 #  
 
 # %%
@@ -184,15 +184,19 @@ stokes.tolerance = tol
 stokes.petsc_options["snes_max_it"] = 500
 
 # additional term in constitutive equation? 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 stokes.constitutive_model.Parameters.viscosity=viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
 
+
+sol_vel = sympy.Matrix([0., 0.])
+
+
 # Free-slip boundary conditions
-stokes.add_dirichlet_bc((0.0,), "Left", (0,))
-stokes.add_dirichlet_bc((0.0,), "Right", (0,))
-stokes.add_dirichlet_bc((0.0,), "Top", (1,))
-stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
+stokes.add_dirichlet_bc(sol_vel, "Left", [0])
+stokes.add_dirichlet_bc(sol_vel, "Right", [0])
+stokes.add_dirichlet_bc(sol_vel, "Top", [1])
+stokes.add_dirichlet_bc(sol_vel, "Bottom", [1])
 
 # NOTE: we set z = 0 to be the top and z = 1 to be bottom
 buoyancy_force = Ra * rhoBar * alphaBar * (t_soln.sym[0] - temp_bar) # directed downwards toward z = 0 (surface)
@@ -213,7 +217,7 @@ display(stokes._u_f0) # RHS of c.o. momentum / buoyancy force
 # %% [markdown]
 # ### System set-up (Advection-Diffusion)
 # In the TALA formulation, the conservation of energy in terms of the total temperature, T, is expressed as:
-# 
+#
 # \begin{aligned}
 # \frac{DT}{Dt} - \frac{Di \bar \alpha}{\bar c_p}\vec g \cdot \vec u (T + T_s) = \frac {1} {\bar \rho \bar c_p} \nabla \cdot (\bar k \nabla T) + \frac{Di}{Ra} \frac{1}{\bar \rho \bar c_p} \phi
 # \end{aligned}
@@ -225,11 +229,11 @@ display(stokes._u_f0) # RHS of c.o. momentum / buoyancy force
 adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
-    V_Field=v_soln,
+    V_fn=v_soln,
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(meshbox.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.Parameters.diffusivity = (k/(rhoBar*cp))
 adv_diff.tolerance = tol
 
@@ -258,7 +262,7 @@ adv_diff.adv_diff_slcn_problem_description() # need to run this?
 
 # %% [markdown]
 # ### Set initial temperature field 
-# 
+#
 # The initial temperature field is set to a sinusoidal perturbation. 
 
 # %%
@@ -425,12 +429,12 @@ plotFig(meshbox, t_soln, v_soln, "T", save_fname = None, with_arrows = False, cm
 # %% [markdown]
 # #### RMS velocity
 # The root mean squared velocity, $v_{rms}$, is defined as: 
-# 
-# 
+#
+#
 # \begin{aligned}
 # v_{rms}  =  \sqrt{ \frac{ \int_V (\mathbf{v}.\mathbf{v}) dV } {\int_V dV} }
 # \end{aligned}
-# 
+#
 # where $\bf{v}$ denotes the velocity field and $V$ is the volume of the box.
 
 # %%
@@ -446,19 +450,19 @@ def v_rms(mesh = meshbox, v_solution = v_soln):
 # #### Surface integrals
 # Since there is no uw3 function yet to calculate the surface integral, we define one.  \
 # The surface integral of a function, $f_i(\mathbf{x})$, is approximated as:  
-# 
+#
 # \begin{aligned}
 # F_i = \int_V f_i(\mathbf{x}) S(\mathbf{x})  dV  
 # \end{aligned}
-# 
+#
 # With $S(\mathbf{x})$ defined as an un-normalized Gaussian function with the maximum at $z = a$  - the surface we want to evaluate the integral in (e.g. z = 1 for surface integral at the top surface):
-# 
+#
 # \begin{aligned}
 # S(\mathbf{x}) = exp \left( \frac{-(z-a)^2}{2\sigma ^2} \right)
 # \end{aligned}
-# 
+#
 # In addition, the full-width at half maximum is set to 1/res so the standard deviation, $\sigma$ is calculated as: 
-# 
+#
 # \begin{aligned}
 # \sigma = \frac{1}{2}\frac{1}{\sqrt{ 2 log 2}}\frac{1}{res} 
 # \end{aligned}
@@ -534,10 +538,10 @@ while t_step < nsteps:
         print("Timestep {}, dt {}".format(t_step, delta_t))
         print(f't_rms = {t_soln.stats()[6]}, v_rms = {vrmsVal[t_step]}, Nu = {NuVal[t_step]}')
 
-        ''' save mesh variables together with mesh '''
-        if t_step % save_every == 0 and not use_checkpoint:
-            print("Saving checkpoint for time step: ", t_step)
-            meshbox.write_timestep_xdmf(filename = outfile, meshVars=[v_soln, p_soln, t_soln, dTdZ], index=0)
+        # ''' save mesh variables together with mesh '''
+        # if t_step % save_every == 0 and not use_checkpoint:
+        #     print("Saving checkpoint for time step: ", t_step)
+        #     meshbox.write_timestep_xdmf(filename = outfile, meshVars=[v_soln, p_soln, t_soln, dTdZ], index=0)
 
     # early stopping criterion
     if t_step > 1 and abs((NuVal[t_step] - NuVal[t_step - 1])/NuVal[t_step]) < epsilon_lr:
@@ -546,13 +550,13 @@ while t_step < nsteps:
     t_step += 1
     time   += delta_t
 
-# save final mesh variables in the run 
-if not use_checkpoint:
-    os.makedirs("../TALA_meshes", exist_ok = True)
-    expt_name = "TALA_Ra1e4_res" + str(res)
-    savefile = "{}_ts{}.h5".format(expt_name,t_step)
-    # save final mesh variables in the run 
-    meshbox.write_timestep_xdmf(filename = outfile, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
+# # save final mesh variables in the run 
+# if not use_checkpoint:
+#     os.makedirs("../TALA_meshes", exist_ok = True)
+#     expt_name = "TALA_Ra1e4_res" + str(res)
+#     savefile = "{}_ts{}.h5".format(expt_name,t_step)
+#     # save final mesh variables in the run 
+#     meshbox.write_timestep_xdmf(filename = outfile, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
 
 # %%
 # Calculate some benchmark values
@@ -561,3 +565,5 @@ if uw.mpi.rank == 0:
     print("Nusselt number at the final time step is {}.".format(Nu))
 
 
+
+# %%

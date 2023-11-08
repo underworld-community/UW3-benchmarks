@@ -35,9 +35,7 @@ import os
 os.makedirs("meshes", exist_ok=True)
 
 if uw.mpi.size == 1:
-    os.makedirs("output", exist_ok=True)
-else:
-    os.makedirs(f"output_np{uw.mpi.size}", exist_ok=True)
+    os.makedirs('./output/SpiegelmanBenchmark/', exist_ok=True)
 
 
 os.environ["UW_TIMING_ENABLE"] = "1"
@@ -221,7 +219,7 @@ if uw.mpi.rank == 0:
 
     gmsh.model.mesh.generate(2)
 
-    gmsh.write(f"./meshes/notch_mesh{problem_size}.msh")
+    gmsh.write(f"./output/SpiegelmanBenchmark/notch_mesh{problem_size}.msh")
     gmsh.finalize()
 # -
 
@@ -234,7 +232,7 @@ timing.start()
 # - Also
 
 mesh1 = uw.discretisation.Mesh(
-    f"./meshes/notch_mesh{problem_size}.msh",
+    f"./output/SpiegelmanBenchmark/notch_mesh{problem_size}.msh",
     simplex=True,
     qdegree=3,
     markVertices=False,
@@ -269,8 +267,8 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    mesh1.vtk("tmp_notch_msh.vtk")
-    pvmesh = pv.read("tmp_notch_msh.vtk")
+    mesh1.vtk('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
+    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
 
     pl = pv.Plotter()
 
@@ -380,7 +378,7 @@ if uw.mpi.size == 1:
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    pvmesh = pv.read(f"./meshes/notch_mesh{problem_size}.msh")
+    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
 
     pl = pv.Plotter()
 
@@ -435,17 +433,20 @@ stokes = uw.systems.Stokes(
 
 # ##### Setup the constitutive model
 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v_soln)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 # #### Boundary conditions
 
+# +
 # Velocity boundary conditions
-stokes.add_dirichlet_bc(nd(0.0025 * u.meter / u.year), "Left", 0)
-stokes.add_dirichlet_bc(0, "Left", 1)
-stokes.add_dirichlet_bc(-nd(0.0025 * u.meter / u.year), "Right", 0)
-stokes.add_dirichlet_bc(0, "Right", 1)
-stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
-# stokes.add_dirichlet_bc((0.0,), "Top", (1,))
+vel = nd(0.0025 * u.meter / u.year)
+
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
+stokes.add_dirichlet_bc((vel,0.0), "Left")
+stokes.add_dirichlet_bc((-vel,0.0), "Right")
+# stokes.add_dirichlet_bc((sympy.oo,sympy.oo), "Top")
+
+# -
 
 
 # #### Bodyforce of the model
@@ -461,7 +462,7 @@ stokes.bodyforce = sympy.Matrix([0, -1*nd_gravity*nd_density])
 # ##### Setup projections of model parameters to save on the mesh
 
 strain_rate_calc = uw.systems.Projection(mesh1, edot)
-strain_rate_calc.uw_function = stokes._Einv2
+strain_rate_calc.uw_function = stokes.Unknowns.Einv2
 strain_rate_calc.smoothing = 1.0e-3
 
 viscosity_calc = uw.systems.Projection(mesh1, visc)
@@ -484,7 +485,7 @@ def plotFig():
     import vtk
     
     stress_calc.uw_function = (
-        2 * visc_fn * stokes._Einv2
+        2 * visc_fn * stokes.Unknowns.Einv2
     )
 
     viscosity_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
@@ -501,8 +502,7 @@ def plotFig():
     pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
 
-    mesh1.vtk("tmp_notch.vtk")
-    pvmesh = pv.read("tmp_notch.vtk")
+    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
 
     points = np.zeros((mesh1._centroids.shape[0], 3))
     points[:, 0] = mesh1._centroids[:, 0]
@@ -575,7 +575,8 @@ if uw.mpi.size == 1:
 # +
 stokes.petsc_options["snes_max_it"] = 500
 
-# stokes.petsc_options.setValue("snes_max_it", 500)
+### see the SNES output
+stokes.petsc_options["snes_converged_reason"] = None
 
 ### sets the relative tolerance
 stokes.tolerance = 1e-12
@@ -626,56 +627,32 @@ nd_C = nd(1e8*u.pascal)
 
 tau_y = nd_C 
 
-eta_plastic = tau_y / ( 2* (stokes._Einv2 + 1.0e-18) )
+eta_plastic = tau_y / ( 2* (stokes.Unknowns.Einv2 + 1.0e-18) )
 
 ### background viscosities
-visc_top = sympy.Min(nd(1e24*u.pascal*u.second), eta_plastic)#1 /  ((1/nd(1e24*u.pascal*u.second)) + (1/eta_plastic))
+visc_top = 1/((1/nd(1e24*u.pascal*u.second)) + (1/ eta_plastic))
 
 visc_bottom = nd(1e21*u.pascal*u.second)
+# -
 
 
-# +
-
+eta_plastic
 
 visc_fn = material.createMask([visc_top, visc_bottom])
 stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
 
 
 
-# +
-# stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
-
-# stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+stokes.solve(zero_init_guess=False)
 
 
-stokes.solve(zero_init_guess=False, picard=0)
-
-
-# +
 if uw.mpi.size ==1:
     plotFig()
-
-
-# -
 
 if uw.mpi.size ==1:
     import matplotlib.pyplot as plt
     with mesh1.access(visc):
         plt.scatter(visc.coords[:,0], visc.coords[:,1], c = visc.data)
-
-# #### Same solve
-# but using the minimum method to determine the viscosity
-# - This shows that the HA is 'easier' to solve, as per the paper
-
-stokes.constitutive_model.Parameters.averaging_method = 'min'
-stokes.constitutive_model.Parameters.viscosity
-
-# +
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-
-
-stokes.solve(zero_init_guess=False, picard=0)
-# -
 
 # ### Add in depth depedency
 # - Depth-dependent von Mises (lithostatic pressure only)
@@ -686,38 +663,34 @@ nd_C = nd(1e8*u.pascal)
 phi = 30 ### in degrees
 fc = np.sin(np.deg2rad(phi))
 
-visc_bottom = nd(1e21*u.pascal*u.second)
-visc_top    = nd(1e24*u.pascal*u.second)
-
-# +
 ### lithoP = Rho0 * g * h
 nd_lithoP = nd_density * nd_gravity * -1*mesh1.X[1] #### 0 to -1 in depth
 
 tau_y_dd_vm = nd_C * np.cos(np.deg2rad(phi)) + (fc * nd_lithoP)
-# -
-
-
-stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
-stokes.constitutive_model.Parameters.yield_stress = [0, tau_y_dd_vm] 
-stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
-stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
-stokes.constitutive_model.Parameters.averaging_method = 'HA'
-stokes.constitutive_model.Parameters.viscosity
 
 # +
-max_lithoP = (10e3*9.81*2.7e3)/1e6
+eta_plastic = tau_y_dd_vm / ( 2* (stokes.Unknowns.Einv2 + 1.0e-18) )
 
-model_max_lithoP = (dim(uw.function.evaluate(nd_lithoP, mesh1.data, mesh1.N), u.megapascal).m).max()
+### background viscosities
+visc_top = 1/((1/nd(1e24*u.pascal*u.second)) + (1/ eta_plastic))
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+
+### update constitutive model
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
+
+
+# +
+max_lithoP = (10e3*9.81*2.7e3)
+
+model_max_lithoP = (dim(uw.function.evaluate(nd_lithoP, mesh1.data, mesh1.N), u.pascal).m).max()
 
 #### check if lithostatic pressure is scaled correctly
 np.isclose(max_lithoP, model_max_lithoP)
-
-# +
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
-
+# -
 
 stokes.solve(zero_init_guess=False, picard=0)
-# -
 
 if uw.mpi.size ==1:
     plotFig()
@@ -740,21 +713,26 @@ visc_top    = nd(1e24*u.pascal*u.second)
 nd_lithoP = nd_density * nd_gravity * -1*mesh1.X[1] #### 0 to -1 in depth
 
 tau_y_dd_dp = nd_C * np.cos(np.deg2rad(phi)) + ( (fc * nd_lithoP) + p_soln.sym[0] )
-# -
 
-stokes.constitutive_model.Parameters.shear_viscosity_0 = [visc_bottom, visc_top]
-stokes.constitutive_model.Parameters.yield_stress = [0, tau_y_dd_dp] 
-stokes.constitutive_model.Parameters.strainrate_inv_II = stokes._Einv2
-stokes.constitutive_model.Parameters.strainrate_inv_II_min = 1.0e-18
-stokes.constitutive_model.Parameters.averaging_method = 'HA'
-stokes.constitutive_model.Parameters.viscosity
+# +
+eta_plastic = tau_y_dd_dp / ( 2* (stokes.Unknowns.Einv2 + 1.0e-18) )
+
+### background viscosities
+visc_top = 1/((1/nd(1e24*u.pascal*u.second)) + (1/ eta_plastic))
+
+visc_bottom = nd(1e21*u.pascal*u.second)
+
+### update constitutive model
+visc_fn = material.createMask([visc_top, visc_bottom])
+stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
+
 
 # +
 # stokes.petsc_options['pc_type'] = 'fieldsplit'
 # ### 'lu' doesn't solve with the pressure field included in the yielding equation
 
 # +
-stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
+# stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.viscosity
 
 
 stokes.solve(picard=0, zero_init_guess=False)

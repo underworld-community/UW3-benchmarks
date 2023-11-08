@@ -16,13 +16,6 @@ import glob
 import os
 
 # %%
-petsc4py.__version__
-
-# %%
-petsc4py.get_config()
-
-
-# %%
 options = PETSc.Options()
 
 
@@ -46,7 +39,7 @@ linear = False ### False for NL version
 
 # %%
 ## number of steps
-nsteps = 101
+nsteps = 10
 
 ## swarm gauss point count (particle distribution)
 swarmGPC = 2
@@ -122,6 +115,9 @@ scaling_coefficients
 ND_gravity = nd( 9.81 * u.meter / u.second**2 )
 
 # %%
+ND_gravity * nd(3.3e3*u.kilogram/u.meter**3)
+
+# %%
 ### add material index
 BGIndex = 0
 SlabIndex = 1
@@ -174,8 +170,8 @@ if uw.mpi.size == 1:
 
     # pv.start_xvfb()
 
-    mesh.vtk("ignore_meshball.vtk")
-    pvmesh = pv.read("ignore_meshball.vtk")
+    mesh.vtk(outputPath + "SD_mesh.vtk")
+    pvmesh = pv.read(outputPath + "SD_mesh.vtk")
 
     # with mesh1.access():
         # usol = stokes.u.data.copy()
@@ -197,6 +193,7 @@ v = uw.discretisation.MeshVariable('U',    mesh,  mesh.dim, degree=2 )
 # p = uw.discretisation.MeshVariable('P',    mesh, 1, degree=1 )
 p = uw.discretisation.MeshVariable('P',    mesh, 1, degree=1,  continuous=True)
 
+### Create mesh variables to project stuff onto
 strain_rate_inv2 = uw.discretisation.MeshVariable("SR", mesh, 1, degree=2)
 dev_stress_inv2 = uw.discretisation.MeshVariable("stress", mesh, 1, degree=1)
 node_viscosity = uw.discretisation.MeshVariable("viscosity", mesh, 1, degree=1)
@@ -207,7 +204,8 @@ materialField  = uw.discretisation.MeshVariable("material", mesh, 1, degree=1)
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
-stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
+
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 # %% [markdown]
 # #### Setup swarm
@@ -215,7 +213,8 @@ stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel(v)
 # %%
 swarm     = uw.swarm.Swarm(mesh=mesh, recycle_rate=recycle_rate)
 
-material  = uw.swarm.IndexSwarmVariable("material", swarm, indices=2)
+### Material index swarm with 2 indicies (crust and mantle)
+material  = uw.swarm.IndexSwarmVariable("M", swarm, indices=2)
 
 
 
@@ -260,8 +259,7 @@ if uw.mpi.size == 1:
 
     # pv.start_xvfb()
 
-    mesh.vtk("ignore_meshball.vtk")
-    pvmesh = pv.read("ignore_meshball.vtk")
+    pvmesh = pv.read(outputPath + "SD_mesh.vtk")
 
     # with mesh1.access():
         # usol = stokes.u.data.copy()
@@ -297,7 +295,7 @@ if uw.mpi.size == 1:
 
 # %%
 nodal_strain_rate_inv2 = uw.systems.Projection(mesh, strain_rate_inv2)
-nodal_strain_rate_inv2.uw_function = stokes._Einv2
+nodal_strain_rate_inv2.uw_function = stokes.Unknowns.Einv2
 nodal_strain_rate_inv2.smoothing = 0.
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
@@ -308,7 +306,7 @@ nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 
 nodal_tau_inv2 = uw.systems.Projection(mesh, dev_stress_inv2)
-nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes._Einv2
+nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes.Unknowns.Einv2
 nodal_tau_inv2.smoothing = 0.
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
@@ -334,7 +332,7 @@ def updateFields(time):
     nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
     nodal_visc_calc.solve(_force_setup=True)
 
-    nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes._Einv2
+    nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes.Unknowns.Einv2
     nodal_tau_inv2.solve(_force_setup=True)
 
 
@@ -355,8 +353,7 @@ def plot_mat():
     pv.global_theme.smooth_shading = True
 
 
-    mesh.vtk("tempMsh.vtk")
-    pvmesh = pv.read("tempMsh.vtk") 
+    pvmesh = pv.read(outputPath + "SD_mesh.vtk")
 
     with swarm.access():
         points = np.zeros((swarm.data.shape[0],3))
@@ -412,9 +409,9 @@ def plot_mat():
 sol_vel = sympy.Matrix([0., 0.])
 
 # No slip left & right & free slip top & bottom
-stokes.add_dirichlet_bc( sol_vel, "Left",  [0,1] )  # left/right: components, function, markers
+stokes.add_dirichlet_bc( sol_vel, "Left",  [0,1] ) 
 stokes.add_dirichlet_bc( sol_vel, "Right",  [0,1] )
-stokes.add_dirichlet_bc( sol_vel, "Top",  [1] )  # top/bottom: components, function, markers 
+stokes.add_dirichlet_bc( sol_vel, "Top",  [1] )  
 stokes.add_dirichlet_bc( sol_vel, "Bottom",  [1] )
 
 
@@ -474,6 +471,8 @@ density_fn = material.createMask([densityBG, densitySlab])
 # %%
 stokes.bodyforce = sympy.Matrix([0, -1 * ND_gravity * density_fn])
 
+stokes.bodyforce
+
 # %% [markdown]
 # ### set some petsc options
 
@@ -486,17 +485,11 @@ if uw.mpi.size == 1:
 
 stokes.tolerance = 1.0e-5
 
-
+### see the SNES output
+stokes.petsc_options["snes_converged_reason"] = None
 
 # %% [markdown]
 # ### Initial linear solve
-
-# %%
-# ### linear solve
-# stokes.constitutive_model.Parameters.shear_viscosity_0 = nd(1e21*u.pascal*u.second)
-# stokes.saddle_preconditioner = 1.0 / nd(1e21*u.pascal*u.second)
-# stokes.solve(zero_init_guess=True)
-
 
 # %%
 ### linear solve
@@ -518,6 +511,11 @@ stokes.solve(zero_init_guess=False)
 # #### Introduce NL viscosity
 #
 # ##### Viscosity is limited betweeen 10$^{21}$ and 10$^{25}$ Pa S
+#
+#
+# - $\eta_s = \eta_0 \, \dot\varepsilon^{1/n-1} $
+# - n = 4
+# - $\eta_0=4.75\times 10^{11}\text{ Pa s} $
 
 # %%
 ### Set constants for the viscosity and density of the sinker.
@@ -528,7 +526,7 @@ if linear == False:
     n = 4
     Slab_visc      = nd(4.75e11*u.pascal*u.second**(1/n))
 
-    viscSlab = sympy.Max(sympy.Min(Slab_visc * sympy.Pow(stokes._Einv2, (1/n-1)), nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
+    viscSlab = sympy.Max(sympy.Min(Slab_visc * sympy.Pow(stokes.Unknowns.Einv2, (1/n-1)), nd(1e25*u.pascal*u.second)), nd(1e21*u.pascal*u.second))
 
 
 else:
@@ -541,6 +539,9 @@ viscosity_mat_fn = material.createMask([viscBG,
                                        viscSlab])
     
 
+
+# %%
+stokes.constitutive_model.Parameters.shear_viscosity_0 
 
 # %%
 # ### add in material-based viscosity
@@ -656,16 +657,16 @@ while step < nsteps:
 NeckWidth_d = dim(NeckWidth[~np.isnan(NeckWidth)], u.kilometer)
 time_array_d   = dim(time_array[~np.isnan(time_array)], u.megayear)
 if uw.mpi.rank == 0:
-    np.savez_compressed(f'{outputPath}/NeckWidth-{res}km', NeckWidth_d.m)
-    np.savez_compressed(f'{outputPath}/modelTime-{res}km', time_array_d.m)
+    np.savez_compressed(f'{outputPath}NeckWidth-{res}km', NeckWidth_d.m)
+    np.savez_compressed(f'{outputPath}modelTime-{res}km', time_array_d.m)
 
 # %%
 ### remove nan values, if any. Convert to km and Myr
 NeckWidth_d = dim(NeckWidth[~np.isnan(NeckWidth)], u.kilometer)
 time_array_d   = dim(time_array[~np.isnan(time_array)], u.megayear)
 if uw.mpi.rank == 0:
-    np.savez_compressed(f'{outputPath}/NeckWidth-{res}km', NeckWidth_d.m)
-    np.savez_compressed(f'{outputPath}/modelTime-{res}km', time_array_d.m)
+    np.savez_compressed(f'{outputPath}NeckWidth-{res}km', NeckWidth_d.m)
+    np.savez_compressed(f'{outputPath}modelTime-{res}km', time_array_d.m)
 
 
 if uw.mpi.rank==0:
@@ -688,7 +689,7 @@ if uw.mpi.rank==0:
     plt.xlim(0, 40)
     plt.grid()
 
-    plt.savefig(f'{outputPath}/slabDetachment_res={res}km_NeckWidth.pdf', dpi=500)
+    plt.savefig(f'{outputPath}slabDetachment_res={res}km_NeckWidth.pdf', dpi=500)
 
     plt.show()
 

@@ -173,6 +173,124 @@ for i in range(meshball.dm.getNumLabels()):
     name = meshball.dm.getLabelName(i)
     print("label name = %s" % name, "\tlabel size = %d" % meshball.dm.getLabelSize(name))
 
+meshball.X[0]
+
+normal_vector
+
+# +
+import sympy as sp
+
+if meshball.dim == 2:
+    ### 2D boundary normal
+    
+    # Define symbolic variables for Cartesian coordinates and the radius
+    x, y = sp.symbols('x y')
+    R1, R2 = sp.symbols('R1 R2', positive=True)
+    
+    # Define the inequalities for the annulus
+    inner_inequality = R1 <= x**2 + y**2
+    outer_inequality = x**2 + y**2 <= R2
+    
+    # Combine the inequalities into an equation for the annulus
+    annulus_equation = sp.And(inner_inequality, outer_inequality)
+    
+    # Compute the gradient of the annulus equation to obtain the normal vector
+    normal_vector = sp.Matrix([sp.diff(annulus_equation, var) for var in (x, y)])
+    
+    # Simplify the normal vector if needed
+    simplified_normal = sp.simplify(normal_vector)
+
+    R_1 = 1
+    R_2 = 2
+
+    print(R_1, R_2)
+    
+    # Separate the inner and outer boundary normals
+    inner_normal = simplified_normal.subs({R1: R_1, R2: R_1, x:meshball.X[0], y:meshball.X[1]})
+    outer_normal = simplified_normal.subs({R1: R_2, R2: R_2, x:meshball.X[0], y:meshball.X[1]})
+    
+    # Display the simplified inner and outer boundary normals
+    print("Simplified Inner Boundary Normal:")
+    sp.pprint(inner_normal)
+    
+    print("\nSimplified Outer Boundary Normal:")
+    sp.pprint(outer_normal)
+
+else:
+    ### 3D boudary normal
+    # Define symbolic variables for Cartesian coordinates and the radius
+    x, y, z = sp.symbols('x y z')
+    R1, R2 = sp.symbols('R1 R2', positive=True)
+    
+    # Define the inequalities for the annulus
+    inner_inequality = R1 <= x**2 + y**2 + z**2
+    outer_inequality = x**2 + y**2 + z**2 <= R2
+    
+    # Combine the inequalities into an equation for the annulus
+    annulus_equation = sp.And(inner_inequality, outer_inequality)
+    
+    # Compute the gradient of the annulus equation to obtain the normal vector
+    normal_vector = sp.Matrix([sp.diff(annulus_equation, var) for var in (x, y, z)])
+    
+    # Simplify the normal vector if needed
+    simplified_normal = sp.simplify(normal_vector)
+    
+    # Separate the inner and outer boundary normals
+    inner_normal = simplified_normal.subs({R1: R1, R2: R1})
+    outer_normal = simplified_normal.subs({R1: R2, R2: R2})
+    
+    # Display the simplified inner and outer boundary normals
+    print("Simplified Inner Boundary Normal:")
+    sp.pprint(inner_normal)
+    
+    print("\nSimplified Outer Boundary Normal:")
+    sp.pprint(outer_normal)
+    
+# -
+
+inner_normal
+
+outer_normal
+
+inner_normal.evalf(inner_normal, meshball.dim)
+
+# +
+# Create a viewer to load the mesh
+mesh_filename = "uw_annulus_internalBoundary_rO2.204152249134948rInt1.9757785467128028_rI1.2041522491349481_csize0.075_csizefs0.075.msh"
+
+
+viewer = PETSc.Viewer().createASCII(mesh_filename, mode=PETSc.Viewer.Mode.READ)
+
+# Create a DM object and load the mesh using the viewer
+dm = PETSc.DMPlex().create()
+dm.create()
+
+# Destroy the viewer after the mesh is loaded
+viewer.destroy()
+
+# Create a Section for the boundary facets
+sectionFacet = dm.getSection("Facet Sets")
+
+# Create a Vec to store the boundary normals
+boundaryNormals = dm.createLocalVec(sectionFacet)
+
+# Loop through the boundary facets and compute their normals
+with dm.getLocalVecArray(boundaryNormals) as facetGeometry:
+    facetNormal = dm.getGeometryFVM()
+    for f in range(len(facetGeometry)):
+        normal = [facetGeometry[f*3 + 0], facetGeometry[f*3 + 1]]
+        # You may need to normalize the normal vector if it's not already normalized
+        magnitude = (normal[0]**2 + normal[1]**2)**0.5
+        normal[0] /= magnitude
+        normal[1] /= magnitude
+        # Now, you have the normal vector for the current facet
+        # You can access it as normal[0] and normal[1]
+
+# Clean up resources
+boundaryNormals.destroy()
+dm.destroy()
+# -
+
 v_soln       = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
 p_soln       = uw.discretisation.MeshVariable("P", meshball, 1, degree=1)
 T_soln       = uw.discretisation.MeshVariable("T", meshball, 1, degree=3)

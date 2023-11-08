@@ -1,12 +1,12 @@
 # %% [markdown]
 # # King / Blankenbach Benchmark Case 1
-# 
+#
 # ## Isoviscous thermal convection with TALA formulation.
-# 
+#
 # Two-dimensional, compressible, bottom heated, steady isoviscous thermal convection in a 1 x 1 box, see case 1 of [King et al. (2009)](https://doi.org/10.1111/j.1365-246X.2009.04413.x) / [Blankenbach et al. (1989) benchmark](https://academic.oup.com/gji/article/98/1/23/622167).
-# 
+#
 # Keywords: Truncated Anelastic Liquid Approximation, TALA, Convection
-# 
+#
 
 # %%
 import petsc4py
@@ -54,8 +54,8 @@ epsilon_lr = 1e-8   ### criteria for early stopping; relative change of the Nuss
 ##########
 # parameters needed for saving checkpoints
 # can set outdir to None if you don't want to save anything
-outdir = "/Users/jcgraciosa/Documents/codes/uw3-dev/TALA_test" 
-outfile = outdir + "/convection_16"
+outdir = '.' #"/Users/jcgraciosa/Documents/codes/uw3-dev/TALA_test" 
+outfile = outdir + "/TALA_test/convection_16"
 save_every = 10
 #
 infile = outfile # set infile to a value if there's a checkpoint from a previous run that you want to start from
@@ -87,11 +87,11 @@ meshbox = uw.meshing.UnstructuredSimplexBox(
 # %% [markdown]
 # ## Reference values 
 # The temperature, T, pressure, p, and density are expressed as a sum of a reference state and a departure from this state:
-# 
+#
 # \begin{aligned}
 # T = \bar T + T'\space \; \; \; p = \bar p + p'  \; \; \;  \rho = \bar \rho (\bar T, \bar p) + \rho'    
 # \end{aligned}
-# 
+#
 # Where the overbarred quantities are the reference states, and the primed quantities are the perturbations. The reference states are temporally static and varies with depth, z.  
 
 # %%
@@ -171,7 +171,7 @@ dTdZ_calc.petsc_options.delValue("ksp_monitor")
 # \begin{aligned}
 # \tau = 2 \eta \dot \epsilon = \eta (\nabla \vec u + \nabla \vec u^T - \frac {2}{3}\nabla \cdot \vec u \bold I) 
 # \end{aligned}
-# 
+#
 #  
 
 # %%
@@ -191,6 +191,9 @@ stokes.petsc_options["snes_max_it"] = 1000
 # stokes petsc parameters
 # stokes.petsc_options["ksp_monitor"] = None
 
+# %%
+
+
 
 # stokes.petsc_options["snes_atol"] = 1e-6
 # stokes.petsc_options["snes_rtol"] = 1e-6
@@ -208,7 +211,7 @@ stokes.petsc_options["snes_max_it"] = 1000
 # stokes.petsc_options.delValue("pc_use_amat")
 
 # additional term in constitutive equation? 
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(meshbox.dim)
+stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v_soln)
 stokes.constitutive_model.Parameters.viscosity=viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
 
@@ -224,6 +227,10 @@ stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 buoyancy_force = Ra * rhoBar * alphaBar * (t_soln.sym[0] - temp_bar) # directed downwards toward z = 0 (surface)
 stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 
+# %%
+stokes.UF1
+
+# %%
 # add terms into the conservation of mass according to the formulation of TALA compressible convection
 stokes.PF0 = sympy.Matrix([dot(v_soln.fn, gradient(rhoBar))/rhoBar])
 stokes.UF1 = (-2/3)*divergence(v_soln.fn) * sympy.eye(meshbox.dim)
@@ -239,7 +246,7 @@ display(stokes._u_f0) # RHS of c.o. momentum / buoyancy force
 # %% [markdown]
 # ### System set-up (Advection-Diffusion)
 # In the TALA formulation, the conservation of energy in terms of the total temperature, T, is expressed as:
-# 
+#
 # \begin{aligned}
 # \frac{DT}{Dt} - \frac{Di \bar \alpha}{\bar c_p}\vec g \cdot \vec u (T + T_s) = \frac {1} {\bar \rho \bar c_p} \nabla \cdot (\bar k \nabla T) + \frac{Di}{Ra} \frac{1}{\bar \rho \bar c_p} \phi
 # \end{aligned}
@@ -289,7 +296,7 @@ adv_diff.adv_diff_slcn_problem_description() # need to run this?
 
 # %% [markdown]
 # ### Set initial temperature field 
-# 
+#
 # The initial temperature field is set to a sinusoidal perturbation. 
 
 # %%
@@ -456,12 +463,12 @@ plotFig(meshbox, t_soln, v_soln, "T", save_fname = None, with_arrows = False, cm
 # %% [markdown]
 # #### RMS velocity
 # The root mean squared velocity, $v_{rms}$, is defined as: 
-# 
-# 
+#
+#
 # \begin{aligned}
 # v_{rms}  =  \sqrt{ \frac{ \int_V (\mathbf{v}.\mathbf{v}) dV } {\int_V dV} }
 # \end{aligned}
-# 
+#
 # where $\bf{v}$ denotes the velocity field and $V$ is the volume of the box.
 
 # %%
@@ -478,19 +485,19 @@ def v_rms(mesh = meshbox, v_solution = v_soln):
 # #### Surface integrals
 # Since there is no uw3 function yet to calculate the surface integral, we define one.  \
 # The surface integral of a function, $f_i(\mathbf{x})$, is approximated as:  
-# 
+#
 # \begin{aligned}
 # F_i = \int_V f_i(\mathbf{x}) S(\mathbf{x})  dV  
 # \end{aligned}
-# 
+#
 # With $S(\mathbf{x})$ defined as an un-normalized Gaussian function with the maximum at $z = a$  - the surface we want to evaluate the integral in (e.g. z = 1 for surface integral at the top surface):
-# 
+#
 # \begin{aligned}
 # S(\mathbf{x}) = exp \left( \frac{-(z-a)^2}{2\sigma ^2} \right)
 # \end{aligned}
-# 
+#
 # In addition, the full-width at half maximum is set to 1/res so the standard deviation, $\sigma$ is calculated as: 
-# 
+#
 # \begin{aligned}
 # \sigma = \frac{1}{2}\frac{1}{\sqrt{ 2 log 2}}\frac{1}{res} 
 # \end{aligned}
@@ -620,10 +627,10 @@ if uw.mpi.rank == 0:
 
 # %% [markdown]
 # ### Post-run analysis - Change to TALA values
-# 
+#
 # **Benchmark values**
 # The loop above outputs $v_{rms}$ as a general statistic for the system. For further comparison, the benchmark values for the RMS velocity, $v_{rms}$, Nusselt number, $Nu$, and non-dimensional gradients at the cell corners, $q_1$ and $q_2$, are shown below for different Rayleigh numbers. All benchmark values shown below were determined in Blankenbach *et al.* 1989 by extroplation of numerical results. 
-# 
+#
 # | $Ra$ | $v_{rms}$ | $Nu$ | $q_1$ | $q_2$ |
 # | ------------- |:-------------:|:-----:|:-----:|:-----:|
 # | 10$^4$ | 42.865 | 4.884 | 8.059 | 0.589 |
@@ -641,7 +648,7 @@ dTdZ_calc.solve() # recalculate gradient of T along Z
 # %% [markdown]
 # ### Calculate the $Nu$ value
 # The Nusselt number is defined as: 
-# 
+#
 # \begin{aligned}
 # Nu  =   -h\frac{ \int_{0}^{l} \partial_{z}T(x, z = h) dx} {\int_{0}^{l} T(x, z = 0) dx} 
 # \end{aligned}
@@ -664,9 +671,9 @@ if uw.mpi.rank == 0:
 #    
 # Note that these values depend on the non-dimensional temperature gradient in the vertical direction, $\frac{\partial T}{\partial z}$.
 # These gradients are evaluated at the following points:
-# 
+#
 # $q_1$ at $x=0$, $z=h$; $q_2$ at $x=l$, $z=h$;
-# 
+#
 # $q_3$ at $x=l$, $z=0$; $q_4$ at $x=0$, $z=0$.   
 
 # %%
@@ -685,7 +692,7 @@ if uw.mpi.rank == 0:
 
 # %% [markdown]
 # ### Calculate the stress for comparison with benchmark value
-# 
+#
 # The stress field for whole box in dimensionless units (King 2009) is:
 # \begin{equation}
 # \tau_{ij} = \eta \frac{1}{2} \left[ \frac{\partial v_j}{\partial x_i} + \frac{\partial v_i}{\partial x_j}\right].
@@ -707,15 +714,15 @@ stress_calc.solve()
 
 # %% [markdown]
 # The vertical normal stress is dimensionalised as: 
-# 
+#
 # $$
 #     \sigma_{t} = \frac{\eta_0 \kappa}{\rho g h^2}\tau _{zz} \left( x, z=h\right)
 # $$
-# 
+#
 # where all constants are defined below. 
-# 
+#
 # Finally, we calculate the topography defined using $h = \sigma_{top} / (\rho g)$. The topography of the top boundary calculated in the left and right corners as given in Table 9 of Blankenbach et al 1989 are:
-# 
+#
 # | $Ra$          |    $\xi_1$  | $\xi_2$  |  $x$ ($\xi = 0$) |
 # | ------------- |:-----------:|:--------:|:--------------:|
 # | 10$^4$  | 2254.02   | -2903.23  | 0.539372          |

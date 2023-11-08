@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.14.5
+#       jupytext_version: 1.14.7
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -58,16 +58,26 @@ if uw.mpi.size == 1:
     import matplotlib.pyplot as plt
 
 
-# %%
-sys = PETSc.Sys()
-sys.pushErrorHandler("traceback")
-
-
+# +
 # Set the resolution.
 res = 32
 
+# default model parameters
+sigma = 0.2          # width of blob
+x_0   = (1./6, 1./6) # position of blob
+kappa = 1            # thermal diffusion (entire domain)
+# -
+
 xmin, xmax = -0.5, 0.5
 ymin, ymax = -0.5, 0.5
+
+# +
+outputPath = f'./output/adv_diff-rotatingCone-res={res}_kappa={kappa}/'
+
+if uw.mpi.rank == 0:
+    # checking if the directory
+    if not os.path.exists(outputPath):
+        os.makedirs(outputPath)
 
 # +
 # mesh = uw.meshing.StructuredQuadBox(
@@ -79,11 +89,6 @@ ymin, ymax = -0.5, 0.5
 mesh = uw.meshing.UnstructuredSimplexBox(
     minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=0.03, regular=False )
 
-# default model parameters
-sigma = 0.2          # width of blob
-x_0   = (1./6, 1./6) # position of blob
-kappa = 1e-6         # thermal diffusion (entire domain)
-
 # Create an mesh vars
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
@@ -93,11 +98,11 @@ T = uw.discretisation.MeshVariable("T", mesh, 1, degree=1)
 adv_diff = uw.systems.AdvDiffusionSLCN(
     mesh,
     u_Field=T,
-    V_Field=v,
+    V_fn=v,
     solver_name="adv_diff",
 )
 
-adv_diff.constitutive_model = uw.systems.constitutive_models.DiffusionModel(mesh.dim)
+adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
 adv_diff.constitutive_model.Parameters.diffusivity = kappa
 
 ### fix temp of top and bottom walls
@@ -148,9 +153,9 @@ def plot_fig():
         pv.global_theme.smooth_shading = True
 
         # pv.start_xvfb()
-        mesh.vtk("tmpMsh.vtk")
+        mesh.vtk(outputPath + "advDiff-rotatingCone-Mesh.vtk")
         # mesh.vtk("ignore_periodic_mesh.vtk")
-        pvmesh = pv.read("tmpMsh.vtk")
+        pvmesh = pv.read(outputPath + "advDiff-rotatingCone-Mesh.vtk")
 
         # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 
@@ -210,7 +215,7 @@ plot_fig()
 step = 0
 time = 0.0
 
-nsteps = 31
+nsteps = 1
 
 while step < nsteps:
     ### print some stuff
@@ -220,7 +225,7 @@ while step < nsteps:
     
     dt0 = adv_diff.estimate_dt()
     
-    dt1 = mesh.get_min_radius() ** 2 / kappa
+    dt1 = kappa / mesh.get_min_radius() ** 2
     
     print(dt0, dt1)
     
@@ -250,10 +255,7 @@ if uw.mpi.size == 1:
     pv.global_theme.jupyter_backend = "panel"
     pv.global_theme.smooth_shading = True
 
-    # pv.start_xvfb()
-    mesh.vtk("tmpMsh.vtk")
-    # mesh.vtk("ignore_periodic_mesh.vtk")
-    pvmesh = pv.read("tmpMsh.vtk")
+    pvmesh = pv.read(outputPath + "advDiff-rotatingCone-Mesh.vtk")
 
     # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 

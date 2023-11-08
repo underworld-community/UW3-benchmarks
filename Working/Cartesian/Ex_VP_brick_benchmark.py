@@ -21,7 +21,7 @@ else:
 
 
 # %%
-outputPath = f'./output/brickBenchmark_viscLimit_zeroInitGuess/'
+outputPath = f'./output/brickBenchmark/'
 
 
 if uw.mpi.rank == 0:
@@ -68,8 +68,6 @@ nd_gravity = nd( 9.81 * u.meter / u.second**2 )
 # %%
 ### Key model parameters
 nd_C = nd(40 *u.megapascal)
-### friction angle
-phi = 45. ### in degrees
 
 # %% [markdown]
 # Set up dimensions of model and sinking block
@@ -83,8 +81,8 @@ BrickHeight = nd(625.*u.meter)
 BrickLength = nd(1250.*u.meter)
 
 ### set the res in x and y
-resx = 256
-resy = 64
+resx = 128
+resy = 32
 
 ### add material index
 BrickIndex = 0
@@ -130,7 +128,7 @@ rank = uw.discretisation.MeshVariable("rank", mesh, 1, degree=1)
 
 # %%
 stokes = uw.systems.Stokes(mesh, velocityField=v, pressureField=p )
-stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
+stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
 # %% [markdown]
 # #### Setup swarm
@@ -174,8 +172,8 @@ if uw.mpi.size == 1:
 
     # pv.start_xvfb()
 
-    mesh.vtk("ignore_meshball.vtk")
-    pvmesh = pv.read("ignore_meshball.vtk")
+    mesh.vtk(outputPath + "stokes_brick_VP_mesh.vtk")
+    pvmesh = pv.read(outputPath + "stokes_brick_VP_mesh.vtk")
 
     # with mesh1.access():
         # usol = stokes.u.data.copy()
@@ -212,7 +210,7 @@ if uw.mpi.size == 1:
 
 # %%
 nodal_strain_rate_inv2 = uw.systems.Projection(mesh, strain_rate_inv2)
-nodal_strain_rate_inv2.uw_function = stokes._Einv2
+nodal_strain_rate_inv2.uw_function = stokes.Unknowns.Einv2
 nodal_strain_rate_inv2.smoothing = 0.
 nodal_strain_rate_inv2.petsc_options.delValue("ksp_monitor")
 
@@ -223,7 +221,7 @@ nodal_visc_calc.petsc_options.delValue("ksp_monitor")
 
 
 nodal_tau_inv2 = uw.systems.Projection(mesh, dev_stress_inv2)
-nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes._Einv2
+nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes.Unknowns.Einv2
 nodal_tau_inv2.smoothing = 0.
 nodal_tau_inv2.petsc_options.delValue("ksp_monitor")
 
@@ -243,7 +241,7 @@ def updateFields():
     nodal_visc_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
     nodal_visc_calc.solve(_force_setup=True)
 
-    nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes._Einv2
+    nodal_tau_inv2.uw_function = 2. * stokes.constitutive_model.Parameters.shear_viscosity_0 * stokes.Unknowns.Einv2
     nodal_tau_inv2.solve(_force_setup=True)
 
 
@@ -264,8 +262,7 @@ def plot_mat():
     pv.global_theme.smooth_shading = True
 
 
-    mesh.vtk("tempMsh.vtk")
-    pvmesh = pv.read("tempMsh.vtk") 
+    pvmesh = pv.read(outputPath + "stokes_brick_VP_mesh.vtk")
 
     with swarm.access():
         points = np.zeros((swarm.data.shape[0],3))
@@ -317,9 +314,7 @@ def plot_field(field):
     pv.global_theme.smooth_shading = True
 
 
-    mesh.vtk("tempMsh.vtk")
-    pvmesh = pv.read("tempMsh.vtk") 
-
+    pvmesh = pv.read(outputPath + "stokes_brick_VP_mesh.vtk")
 
     with mesh.access(node_viscosity, strain_rate_inv2):
         pvmesh.point_data["edot"] = strain_rate_inv2.rbf_interpolate(mesh.data, nnn=1)
@@ -360,19 +355,11 @@ def plot_field(field):
 # Velocity boundary conditions
 vel = nd(2e-11 * u.meter / u.second)
 
-### works for both kinds of boxes
-stokes.add_dirichlet_bc((vel,0), "Left", (0,1))
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
+stokes.add_dirichlet_bc((vel,0.0), "Left")
+stokes.add_dirichlet_bc((-vel,0.0), "Right")
+# stokes.add_dirichlet_bc((sympy.oo,sympy.oo), "Top")
 
-stokes.add_dirichlet_bc((-vel,0), "Right", (0,1))
-
-stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
-
-#### Only works for the unstructedQuadBox
-# stokes.add_dirichlet_bc(vel, "Left", 0)
-# stokes.add_dirichlet_bc(0, "Left", 1)
-# stokes.add_dirichlet_bc(-vel, "Right", 0)
-# stokes.add_dirichlet_bc(0, "Right", 1)
-# stokes.add_dirichlet_bc((0.0,), "Bottom", (1,))
 
 # %% [markdown]
 # #### Visualise swarm and passive tracers
@@ -406,19 +393,16 @@ stokes.tolerance = 1.0e-10
 
 stokes.petsc_options["snes_max_it"] = 500
 
+### see the SNES output
+stokes.petsc_options["snes_converged_reason"] = None
+
 
 # stokes.petsc_options["snes_atol"] = 1e-6
 # stokes.petsc_options["snes_rtol"] = 1e-6
 
 # %% [markdown]
 # ### Initial linear solve
-
-# %%
-# ### linear solve
-# stokes.constitutive_model.Parameters.shear_viscosity_0 = nd(1e21*u.pascal*u.second)
-# stokes.saddle_preconditioner = 1.0 / nd(1e21*u.pascal*u.second)
-# stokes.solve(zero_init_guess=True)
-
+# - Save the data
 
 # %%
 ### linear solve
@@ -431,7 +415,7 @@ viscosity_L_fn = material.createMask([nd(1e20*u.pascal*u.second),
 
 stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_L_fn
 # stokes.saddle_preconditioner = 1.0 / viscosity_L_fn
-stokes.solve(zero_init_guess=True)
+stokes.solve()
 
 # %%
 updateFields()
@@ -439,6 +423,7 @@ mesh.petsc_save_checkpoint(index=0, meshVars=[strain_rate_inv2, node_viscosity, 
 
 # %% [markdown]
 # #### Introduce NL viscosity
+# Test a range of friction angles (0 to 30)
 
 # %%
 nd_lithoP = nd_density * nd_gravity * (ymax-mesh.X[1])
@@ -447,7 +432,7 @@ step = 1
 
 for phi in [0, 5, 10, 15, 20, 25, 30]:
 
-    ### linear solve
+    ### initial linear solve
     viscosity_L_fn = material.createMask([nd(1e20*u.pascal*u.second),
                                           nd(1e25*u.pascal*u.second)])
     
@@ -455,12 +440,11 @@ for phi in [0, 5, 10, 15, 20, 25, 30]:
     
     
     stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_L_fn
-    # stokes.saddle_preconditioner = 1.0 / viscosity_L_fn
     stokes.solve(zero_init_guess=True)
 
     
 
-    
+    ### add in the plasticity
     fc = np.arctan(np.radians(phi))
 
 
@@ -469,7 +453,7 @@ for phi in [0, 5, 10, 15, 20, 25, 30]:
 
 
 
-    viscosity_Y = (tau_y_dd_vm / (2 * stokes._Einv2 + 1.0e-18))
+    viscosity_Y = (tau_y_dd_vm / (2 * stokes.Unknowns.Einv2 + 1.0e-18))
     
     
     # nl_visc_bg = sympy.Min(viscosity_Y, nd(1e25*u.pascal*u.second)) #, nd(1e21*u.pascal*u.second))
@@ -486,7 +470,6 @@ for phi in [0, 5, 10, 15, 20, 25, 30]:
 
 
     stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
-    # stokes.saddle_preconditioner = 1.0 / visc_fn
     
 
         
@@ -548,5 +531,11 @@ plt.plot(x[peaks0], SR_profile0[peaks0], "x", c='blue')
 
 plt.plot(x, SR_profile1, c='red')
 plt.plot(x[peaks1], SR_profile1[peaks1], "x", c='red')
+
+# %%
+
+# %%
+
+# %%
 
 # %%
