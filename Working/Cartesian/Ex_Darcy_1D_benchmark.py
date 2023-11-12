@@ -41,7 +41,7 @@ benchmark_version = 0
 minX, maxX = -1.0, 0.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=2)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=2, regular=False)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY),
@@ -100,7 +100,7 @@ initialPressure = -1.0 * y * max_pressure
 # +
 # set up two materials
 
-interfaceY = -0.26
+interfaceY = -0.25
 
 from sympy import Piecewise, ceiling, Abs
 
@@ -143,7 +143,7 @@ else:
 # +
 darcy.f = 0.0
 
-darcy.s = sympy.Matrix([0, -1]).T
+darcy.s = sympy.Matrix([0, 0]).T
 
 darcy.constitutive_model.Parameters.diffusivity=kFunc
 
@@ -233,7 +233,7 @@ if uw.mpi.size == 1:
 
 # +
 # set up interpolation coordinates
-ycoords = np.linspace(minY + 0.001 * (maxY - minY), maxY - 0.001 * (maxY - minY), 100)
+ycoords = np.linspace(minY + 0.01 * (maxY - minY), maxY - 0.01 * (maxY - minY), 100)
 xcoords = np.full_like(ycoords, -1)
 xy_coords = np.column_stack([xcoords, ycoords])
 
@@ -282,5 +282,7 @@ ax1.legend()
 # -
 if not np.allclose(pressure_analytic_noG, pressure_interp, atol=1e-2):
     raise RuntimeError('Analytical and numerical solution not close')
+
+np.allclose(pressure_analytic_noG, pressure_interp, atol=1e-2)
 
 
