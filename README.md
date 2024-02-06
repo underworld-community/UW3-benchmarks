@@ -1,8 +1,8 @@
-A community repository for Underworld3 benchmark models.
+# A community repository for Underworld3 benchmark models.
 
- Try them on mybinder now [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/julesghub/UW3-benchmarks/dev) 
+Try them on mybinder now [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/julesghub/UW3-benchmarks/dev) 
 
-Or download the Underworld3 image at https://hub.docker.com/repository/docker/julesg/underworld3/
+ or download the Underworld3 image at https://hub.docker.com/repository/docker/julesg/underworld3/
 
 To run the image locally we recommend using either podman or docker, either with the desktop-GUI or command line applications.
 
@@ -11,8 +11,10 @@ To run the image locally we recommend using either podman or docker, either with
  - docker - https://www.docker.com/get-started/
 
 ### Command line usage
+ - podman - https://podman.io/docs/installation
+ - docker - https://docs.docker.com/get-docker/
 
-Some ways of running the container locally
+Some ways of running the container locally. NOTE: In examples `podamn` can be swapped for `docker`
 
 ```bash
 # create a persistent I/O volume to transfer data
