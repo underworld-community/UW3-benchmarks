@@ -4,7 +4,7 @@ Try them on mybinder now [![Binder](https://mybinder.org/badge_logo.svg)](https:
 
  or download the Underworld3 image at https://hub.docker.com/repository/docker/julesg/underworld3/
 
-To run the image locally we recommend using either podman or docker, either with the desktop-GUI or command line applications.
+To run the image locally we recommend using either podman or docker, either via the desktop-GUI or command line application.
 
 ### Desktop GUI applications
  - podman - https://podman-desktop.io/
@@ -14,7 +14,7 @@ To run the image locally we recommend using either podman or docker, either with
  - podman - https://podman.io/docs/installation
  - docker - https://docs.docker.com/get-docker/
 
-Some ways of running the container locally. NOTE: In examples `podamn` can be swapped for `docker`
+Some ways of running the container via command line. NOTE: In examples `podamn` can be swapped for `docker`
 
 ```bash
 # create a persistent I/O volume to transfer data
