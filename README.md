@@ -25,8 +25,8 @@ podman run -p 9999:8888 -v uw3_vol:/home/jovyan/vol_space underworld3:0.9
 # alternative run with an interactive bash prompt (no jupyterlab) and extra volume mount.
 podman run --rm -it \
             -p 9999:8888 \
-            -v uw3_vol:/home/jovyan/vol_space
-            -v ${HOME}:/home/jovyan/host
+            -v uw3_vol:/home/jovyan/vol_space \
+            -v ${HOME}:/home/jovyan/host \
             bash
 ```
 
