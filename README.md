@@ -1,55 +1,42 @@
-<table><tr><td><img src='./raytay_init.png'></td><td><img src='./raytay.png'></td></tr></table>
+# A community repository for Underworld3 benchmark models.
 
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/underworld-community/template-project/master)
+Try them on mybinder now [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/julesghub/UW3-benchmarks/dev) 
 
-About
------
-**_Please replace the following with information about your own repository._**
+ or download the Underworld3 image at https://hub.docker.com/repository/docker/julesg/underworld3/
 
-Welcome! This is a template git repository for creating REPRODUCIBLE Underworld code based projects.
+To run the image locally we recommend using either podman or docker, either via the desktop-GUI or command line application.
 
-REPRODUCIBLE because this project:
-1. Is stored in a git repository.
-2. Uses a Dockerfile to recreate the exact project environment.
+### Desktop GUI applications
+ - podman - https://podman-desktop.io/
+ - docker - https://www.docker.com/get-started/
 
-The two features above enable the project to take advantage of software engineering and open source principles, such as:
-_version control_, _reproducible environments_, _collaboration_ (Pull Requests, Binderhub), _continuous integration_. 
+### Command line usage
+ - podman - https://podman.io/docs/installation
+ - docker - https://docs.docker.com/get-docker/
 
-(See https://the-turing-way.netlify.com/, for a general introduction to these principle. N.B. it is data-science focussed)  
+Some ways of running the container via command line. NOTE: In examples `podamn` can be swapped for `docker`
 
-You can use this repository as a GitHub template to start a new repository of your own that matches the requirements of the underworld-community. To get started, hit the "Use this template" button above. See this [quick start guide]( https://github.com/underworld-community/template-project/wiki/Quick-start) for more information.
+```bash
+# create a persistent I/O volume to transfer data
+podman volume create uw3_vol
+# run image with jupyterlab on localhost:9999
+podman run -p 9999:8888 -v uw3_vol:/home/jovyan/vol_space underworld3:0.9
 
+# alternative run with an interactive bash prompt (no jupyterlab) and extra volume mount.
+podman run --rm -it \
+            -p 9999:8888 \
+            -v uw3_vol:/home/jovyan/vol_space \
+            -v ${HOME}:/home/jovyan/host \
+            bash
+```
 
-Files
------
-**_Please give a quick overview of purpose of the model files/directories included in this repo._**
-**_Note that while light data files are fine,  heavy data should not be included in your repository._**
+Docker management
+```bash
+# see your containers and delete them
+podman ps -a
+podman rm <container_name>
 
-File | Purpose
---- | ---
-`RayTay.ipynb` | A simple Rayleigh Taylor notebook. 
-`VrmsCaseA.txt`| Expected results data file. 
-`raytay.png` | Image file.
-`raytay_init.png` | Initial image file.
-
-Tests
------
-**_Please specify how your repository is tested for correctness._**
-**_Tests are not required for `laboratory` tagged repositories, although still encouraged._**
-**_All other repositories must include a test._**
-
-The attained peak VRMs time is tested against an expected value. If it is outside a given tolerance, an exception is raised.
-
-Parallel Safe
--------------
-**_Please specify if your model will operate in parallel, and any caveats._**
-
-Yes, test result should be obtained in both serial and parallel operation.
-
-Check-list
-----------
-- [ ] (Required) Have you replaced the above sections with your own content? 
-- [ ] (Required) Have you updated the Dockerfile to point to your required UW/UWG version? 
-- [ ] (Required) Have you included a working Binder badge/link so people can easily run your model?
-                 You probably only need to replace `template-project` with your repo name. 
-- [ ] (Optional) Have you included an appropriate image for your model? 
+# see your images and delete them
+podman images -a
+podman rmi underworld3:0.9
+```
