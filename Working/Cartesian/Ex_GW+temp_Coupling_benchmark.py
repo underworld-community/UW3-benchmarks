@@ -58,10 +58,10 @@ options = PETSc.Options()
 # #### Set up the mesh and mesh vars
 
 # +
-minX, maxX =  0.0, 2.0
+minX, maxX =  0.0, 4.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=3, regular=False)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.025, qdegree=3, regular=False)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY),
@@ -105,8 +105,6 @@ if uw.mpi.size == 1:
 
 # Create Darcy Solver
 darcy = uw.systems.SteadyStateDarcy(mesh, gw_p_soln, gw_v_soln)
-darcy.petsc_options.delValue("ksp_monitor")
-darcy.petsc_options["snes_rtol"] = 1.0e-6  # Needs to be smaller than the contrast in properties
 darcy.constitutive_model = uw.constitutive_models.DiffusionModel
 
 
@@ -114,7 +112,7 @@ darcy.constitutive_model = uw.constitutive_models.DiffusionModel
 
 # +
 # Groundwater pressure boundary condition on the bottom wall
-maxHydDiff = 1.
+
 
 maxgwpressure = 1.
 
@@ -128,9 +126,10 @@ initialTemperature = -1.0 * y
 
 interfaceX = 1.
 
-k1 = 1
-k2 = 1e-2
+k1 = 1e2
+k2 = 1e-4
 
+maxHydDiff = max(k1, k2)
 
 #### The piecewise version
 kFunc = sympy.Piecewise((k1, x <= interfaceX), (k2, x > interfaceX), (0.0, True))
@@ -167,8 +166,20 @@ darcy._v_projector.add_dirichlet_bc(0.0, "Right", [0])
 
 # ### Solve
 
+# +
+darcy.petsc_options["snes_converged_reason"] = None
+darcy.petsc_options["snes_monitor"] = None
+
+# darcy.petsc_options.delValue("ksp_monitor")
+darcy.petsc_options["snes_rtol"] = 1.0e-8  # Needs to be smaller than the contrast in properties
+darcy.petsc_options["ksp_rtol"] = 1.0e-8  # Needs to be smaller than the contrast in properties
+
+
+# +
 # Solve times
 darcy.solve()
+
+
 
 # +
 ### Visualise the result
@@ -234,7 +245,7 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(pvstream, line_width=10.0)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.000005, opacity=0.75)
 
     pl.show(cpos="xy")
 # -
@@ -281,6 +292,15 @@ tempAdvDiff.constitutive_model = uw.constitutive_models.DiffusionModel
 tempAdvDiff.constitutive_model.Parameters.diffusivity = thermalDiff
 
 tempAdvDiff.f = -1*coeff*v_soln.sym.dot(t_soln.gradient())
+
+# +
+tempAdvDiff.petsc_options["snes_converged_reason"] = None
+tempAdvDiff.petsc_options["snes_monitor"] = None
+
+# darcy.petsc_options.delValue("ksp_monitor")
+tempAdvDiff.petsc_options["snes_rtol"] = 1.0e-8  
+tempAdvDiff.petsc_options["ksp_rtol"] = 1.0e-8 
+# -
 
 # #### Solve
 
@@ -350,7 +370,7 @@ if uw.mpi.size == 1:
 
     pl.add_mesh(pvstream, line_width=10.0)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.05, opacity=0.75)
+    pl.add_arrows(arrow_loc, arrow_length, mag=0.000005, opacity=0.75)
 
     pl.show(cpos="xy")
 # -
@@ -388,7 +408,7 @@ import matplotlib.pyplot as plt
 if uw.mpi.rank == 0:
     plt.clf()
 
-for xpos in [0.,1.,2.]:
+for xpos in [0.,1.,maxX]:
     arrT = np.zeros(n)
     arrT = uw.function.evalf(t_soln.sym, np.vstack([np.zeros_like(arrY)+xpos,arrY]).T)
 
@@ -398,9 +418,10 @@ for xpos in [0.,1.,2.]:
 
 # Analytic Solution
 if uw.mpi.rank == 0:
-    arrY = np.linspace(-1.,0.,10)
-    arrAnalytic = np.zeros(10)
-    for i in range(10):
+    n = 50
+    arrY = np.linspace(-1.,0.,n)
+    arrAnalytic = np.zeros(n)
+    for i in range(n):
         arrAnalytic[i] = analyticsol(arrY[i])
 
     plt.scatter(arrAnalytic,arrY,label="Analytic Advection",lw=0,c="Blue")
@@ -422,5 +443,14 @@ if uw.mpi.rank == 0:
 # x = 0, where the temp field is altered by the gw flow due to the high hydraulic conductivity <br>
 # x = 1, the interface between the high (x < 1) and low (x > 1) hydraulic conductivity (and the flow field) <br>
 # x = 2, the area with low hydrauilic conductivity
+
+x = np.linspace(minX, maxX, 201)
+y = np.zeros_like(x)+0.5
+
+vel_y = uw.function.evalf(v_soln.sym[1], np.vstack([x,y]).T)
+
+plt.plot(x, vel_y)
+plt.xlabel('x coord')
+plt.ylabel('y velocity')
 
 
