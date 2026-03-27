@@ -6,6 +6,9 @@
 # #### UW2 example ported to UW3 
 
 # %%
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 import underworld3 as uw
 
 import numpy as np
@@ -16,18 +19,21 @@ import os
 import sys
 
 if uw.mpi.size == 1:
-    import matplotlib.pyplot as plt 
+    import matplotlib.pyplot as plt
 
+# %%
+params = uw.Params(
+    uw_res_x                = 160,
+    uw_res_y                = 64,
+    uw_km_index             = 5,
+    uw_surf_inclination_deg = 0.5,  # 0.1 = Experiment D, 0.5 = Experiment B
+)
+
+km_index = params.uw_km_index
 
 # %%
 # details of the bottom curve
 L = [160, 80, 40, 20, 10, 5]
-
-if len(sys.argv):
-    try:
-        km_index = int(sys.argv[1])
-    except:
-        km_index = 5
 
 i = km_index
 
@@ -38,9 +44,10 @@ average_bedthickness = 1000.
 surface_height = average_bedthickness + amplitude + min_bed_height
 maxY = surface_height
 
+resX = params.uw_res_x
+resY = params.uw_res_y
 
-resX = 160
-resY = 64
+show_plot = False
 
 print("resX: " + str(resX) + " resY: " + str(resY))
 
@@ -168,30 +175,29 @@ if deform_mesh:
     ### keep looping over to refine the boundary
     for i in range(refinement_steps):
     
-        with mesh.access():
-            
-            mesh_coords = mesh.data.copy()
-    
-            for index in range(resX+1):  
-    
-                start_x = dx * index
-    
-                # interface_y =  surface_height - average_bedthickness + (amplitude * np.cos(2*np.pi*start_x*0.5))
-                interface_y =  surface_height - average_bedthickness + amplitude * np.sin(start_x * (np.pi * 2.) / (maxX-minX) )
 
-    
-                #print (start_x,interface_y)
-                #lx.append(start_x)
-                #ly.append(interface_y)
-    
-                #ind = np.where(abs(mesh.data[:,0] - start_x) < 0.01*dx)
-                ind = np.where(abs(mesh.data[:,0] - start_x) < 0.01*dx)
-                
-                # print(ind)
-    
-                mesh_coords[ind[0],1] = mesh_deform(mesh.data[ind[0],1], interface_y, 0.25)
-                
-            mesh.deform_mesh(mesh_coords)
+        mesh_coords = mesh.data.copy()
+
+        for index in range(resX+1):  
+
+            start_x = dx * index
+
+            # interface_y =  surface_height - average_bedthickness + (amplitude * np.cos(2*np.pi*start_x*0.5))
+            interface_y =  surface_height - average_bedthickness + amplitude * np.sin(start_x * (np.pi * 2.) / (maxX-minX) )
+
+
+            #print (start_x,interface_y)
+            #lx.append(start_x)
+            #ly.append(interface_y)
+
+            #ind = np.where(abs(mesh.X.coords[:,0] - start_x) < 0.01*dx)
+            ind = np.where(abs(mesh.X.coords[:,0] - start_x) < 0.01*dx)
+
+            # print(ind)
+
+            mesh_coords[ind[0],1] = mesh_deform(mesh.X.coords[ind[0],1], interface_y, 0.25)
+
+        mesh._deform_mesh(mesh_coords)
 
 
 # %%
@@ -233,57 +239,47 @@ if perfect_mesh:
     ### keep looping over to refine the boundary
     for i in range(refinement_steps):
     
-        with mesh.access():
-            
-            mesh_coords = mesh.data.copy()
-    
-            for index in range(resX+1):  
-    
-    
-                start_x = dx * index
-    
-                # interface_y =  surface_height - average_bedthickness + (amplitude * np.cos(2*np.pi*start_x*0.5))
-                interface_y =  surface_height - average_bedthickness + amplitude * np.sin(start_x * (np.pi * 2.) / (maxX-minX) )
+
+        mesh_coords = mesh.data.copy()
+
+        for index in range(resX+1):  
 
 
-                ind = np.where(abs(mesh.data[:,0] - start_x) < 0.01*dx)
+            start_x = dx * index
 
-                y_coords = mesh.data[ind[0],1]
+            # interface_y =  surface_height - average_bedthickness + (amplitude * np.cos(2*np.pi*start_x*0.5))
+            interface_y =  surface_height - average_bedthickness + amplitude * np.sin(start_x * (np.pi * 2.) / (maxX-minX) )
 
 
-                ### Weird layout on the first index
-                if index == 0:
-                    coords = mesh_deform_Ind(y_coords,resY/2,interface_y,0.2)
-                    new_coords = y_coords
-                    new_coords[2:] = coords[2:][::-1]
-                else:
-                    new_coords = mesh_deform_Ind(y_coords,resY/2,interface_y,0.2)
+            ind = np.where(abs(mesh.X.coords[:,0] - start_x) < 0.01*dx)
 
-                if np.unique(new_coords, return_counts=True)[1].any() > 1:
-                    print('duplicates found')
+            y_coords = mesh.X.coords[ind[0],1]
 
-                
-                
-                mesh_coords[ind[0],1] = new_coords
-                
-        mesh.deform_mesh(mesh_coords)
+
+            ### Weird layout on the first index
+            if index == 0:
+                coords = mesh_deform_Ind(y_coords,resY/2,interface_y,0.2)
+                new_coords = y_coords
+                new_coords[2:] = coords[2:][::-1]
+            else:
+                new_coords = mesh_deform_Ind(y_coords,resY/2,interface_y,0.2)
+
+            if np.unique(new_coords, return_counts=True)[1].any() > 1:
+                print('duplicates found')
+
+
+
+            mesh_coords[ind[0],1] = new_coords
+
+        mesh._deform_mesh(mesh_coords)
 
 # %%
-if uw.mpi.size == 1:
-    import numpy as np
+if show_plot and uw.mpi.size == 1:
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    mesh.vtk(outputPath+"tmp_ice_mesh.vtk")
-    pvmesh = pv.read(outputPath + "tmp_ice_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
     pl = pv.Plotter()
 
@@ -325,22 +321,21 @@ omega = 2.0 * sympy.pi / maxX
 # z_bed_function = surface_height - average_bedthickness + (amplitude * sympy.cos(omega * x*0.5) )
 z_bed_function = surface_height - average_bedthickness + amplitude * sympy.sin(omega * x) 
 
-with swarm.access(material):
-    material.data[:,0] = material_ice
-    material.data[swarm.data[:,1] <= uw.function.evalf(z_bed_function, swarm.data)] = material_rock
+material.data[:,0] = material_ice
+material.data[swarm.data[:,1] <= uw.function.evaluate(z_bed_function, swarm.data).flatten()] = material_rock
 
-    if uw.mpi.size == 1:
-        ### material layout
-        plt.figure(figsize=(10, 4))
-        plt.title('Material')
-        material_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=material.data)
-        plt.colorbar(material_scatter)
+if show_plot and uw.mpi.size == 1:
+    ### material layout
+    plt.figure(figsize=(10, 4))
+    plt.title('Material')
+    material_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=material.data)
+    plt.colorbar(material_scatter)
 
 # %%
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 # stokes.constitutive_model.Parameters.shear_viscosity_0=1
 
-surf_inclination = 0.5 * np.pi / 180 # 0.1 = Experiment D, 0.5 = Experiment B
+surf_inclination = params.uw_surf_inclination_deg * np.pi / 180  # 0.1 = Experiment D, 0.5 = Experiment B
 z_hat =  sympy.Matrix([sympy.sin(surf_inclination), 0]) #- sympy.cos(surf_inclination)])
 
 air_density = nd(1*u.kilogram/u.meter**3)
@@ -359,7 +354,7 @@ buoyancy = density_fn * nd_gravity * z_hat
 stokes.bodyforce = buoyancy 
 
 # %%
-mesh.petsc_save_checkpoint(0, meshVars=[eta, SR, stress, vel, p], outputPath=outputPath)
+# mesh.petsc_save_checkpoint(0, meshVars=[vel, p], outputPath=outputPath)  # skipped: vars not yet initialised
 
 # %%
 if uw.mpi.size == 1:
@@ -379,15 +374,14 @@ stokes.constitutive_model.Parameters.shear_viscosity_0=1.
 stokes.solve(zero_init_guess=True)
 
 # %%
-if uw.mpi.size == 1:
-    with swarm.access(material):
-        n = 10 ### quiver nodes
-        ### material layout
-        plt.figure(figsize=(10, 4))
-        plt.title('Material')
-        material_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=material.data)
-        plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evalf(vel.sym[0], mesh._centroids)[::n], uw.function.evalf(vel.sym[1], mesh._centroids)[::n])
-        plt.colorbar(material_scatter)
+if show_plot and uw.mpi.size == 1:
+    n = 10 ### quiver nodes
+    ### material layout
+    plt.figure(figsize=(10, 4))
+    plt.title('Material')
+    material_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=material.data)
+    plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evaluate(vel.sym[0], mesh._centroids)[::n], uw.function.evaluate(vel.sym[1], mesh._centroids)[::n])
+    plt.colorbar(material_scatter)
 
 # %% assign material properties (density, viscosity)
 sec_in_year = 3.1536e7
@@ -407,7 +401,13 @@ n = 3.
 
 # ice_viscosity = nd((1e+12 / sec_in_year) *u.pascal*u.year)
 
-viscosityFnIceBase = nd(0.5 * (A ** (-1./n)*(dim(stokes.Unknowns.Einv2, 1/u.second).m**((1.-n) / float(n))))*(u.pascal**n)*u.year)
+# Glen's flow law: η = 0.5 * A^(-1/n) * Einv2^((1-n)/n)
+# A is in Pa^(-n)/yr; compute all unit factors numerically to avoid sympy/pint conflict.
+A_SI = A / sec_in_year  # Pa^(-n)/s
+t_scale_s = float(KTime.to_base_units().magnitude)   # non-dim time scale in seconds
+visc_scale = float(KViscosity.to_base_units().magnitude)  # non-dim viscosity scale in Pa·s
+nd_prefactor = 0.5 * (A_SI ** (-1./n)) * (t_scale_s ** ((n - 1.) / n)) / visc_scale
+viscosityFnIceBase = nd_prefactor * stokes.Unknowns.Einv2 ** ((1. - n) / float(n))
 ice_viscosity =  sympy.Max(sympy.Min(viscosityFnIceBase, maxViscosityIce), minViscIce) # nd((1e+12 / sec_in_year) *u.pascal*u.year) # 
 
 
@@ -434,7 +434,7 @@ stokes.solve(zero_init_guess=False)
 
 # %%
 # if uw.mpi.size == 1:
-#     plt.scatter(mesh.data[:,0], mesh.data[:,1], c=uw.function.evalf(surface_fn, mesh.data))
+#     plt.scatter(mesh.X.coords[:,0], mesh.X.coords[:,1], c=uw.function.evaluate(surface_fn, mesh.data))
 
 # %%
 # ### calibrate pressure using surface intergrals
@@ -478,48 +478,47 @@ stress_calc.solve(_force_setup=True)
 mesh.petsc_save_checkpoint(1, meshVars=[eta, SR, stress, vel, p], outputPath=outputPath)
 
 # %%
-if uw.mpi.size == 1:
-    with swarm.access(material):
-        n = 10 ### quiver nodes
-        ### material layout
-        plt.figure(figsize=(10, 4))
-        plt.title('Material')
-        material_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=material.data)
-        plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evalf(vel.sym[0], mesh._centroids)[::n], uw.function.evalf(vel.sym[1], mesh._centroids)[::n])
-        plt.colorbar(material_scatter)
-        ### Density distribution
-        plt.figure(figsize=(10, 4))
-        plt.title('Density [kg/m$^{-3}$]')
-        density_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=dim(uw.function.evalf(density_fn, swarm.data), u.kilogram/u.meter**3).m)
-        plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evalf(vel.sym[0], mesh._centroids)[::n], uw.function.evalf(vel.sym[1], mesh._centroids)[::n])
-        plt.colorbar(density_scatter)
-        ### viscosity
-        plt.figure(figsize=(10, 4))
-        plt.title('log viscosity [Pa yr]')
-        visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=np.log10(dim(uw.function.evalf(eta.sym[0], swarm.data), u.pascal*u.year).m))
-        plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evalf(vel.sym[0], mesh._centroids)[::n], uw.function.evalf(vel.sym[1], mesh._centroids)[::n])
-        plt.colorbar(visc_scatter)
-        ### SR
-        plt.figure(figsize=(10, 4))
-        plt.title('log strain rate [s$^{-1}$]')
-        visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=np.log10(dim(uw.function.evalf(SR.sym[0], swarm.data), 1/u.second).m))
-        plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evalf(vel.sym[0], mesh._centroids)[::n], uw.function.evalf(vel.sym[1], mesh._centroids)[::n])
-        plt.colorbar(visc_scatter)
-        ### stress
-        plt.figure(figsize=(10, 4))
-        plt.title('Shear stress [MPa]')
-        visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=(dim(uw.function.evalf(stress.sym[0], swarm.data), u.pascal).m)/1e6)
-        plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evalf(vel.sym[0], mesh._centroids)[::n], uw.function.evalf(vel.sym[1], mesh._centroids)[::n])
-        plt.colorbar(visc_scatter)
+if show_plot and uw.mpi.size == 1:
+    n = 10 ### quiver nodes
+    ### material layout
+    plt.figure(figsize=(10, 4))
+    plt.title('Material')
+    material_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=material.data)
+    plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evaluate(vel.sym[0], mesh._centroids)[::n], uw.function.evaluate(vel.sym[1], mesh._centroids)[::n])
+    plt.colorbar(material_scatter)
+    ### Density distribution
+    plt.figure(figsize=(10, 4))
+    plt.title('Density [kg/m$^{-3}$]')
+    density_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=dim(uw.function.evaluate(density_fn, swarm.data), u.kilogram/u.meter**3).m)
+    plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evaluate(vel.sym[0], mesh._centroids)[::n], uw.function.evaluate(vel.sym[1], mesh._centroids)[::n])
+    plt.colorbar(density_scatter)
+    ### viscosity
+    plt.figure(figsize=(10, 4))
+    plt.title('log viscosity [Pa yr]')
+    visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=np.log10(dim(uw.function.evaluate(eta.sym[0], swarm.data), u.pascal*u.year).m))
+    plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evaluate(vel.sym[0], mesh._centroids)[::n], uw.function.evaluate(vel.sym[1], mesh._centroids)[::n])
+    plt.colorbar(visc_scatter)
+    ### SR
+    plt.figure(figsize=(10, 4))
+    plt.title('log strain rate [s$^{-1}$]')
+    visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=np.log10(dim(uw.function.evaluate(SR.sym[0], swarm.data), 1/u.second).m))
+    plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evaluate(vel.sym[0], mesh._centroids)[::n], uw.function.evaluate(vel.sym[1], mesh._centroids)[::n])
+    plt.colorbar(visc_scatter)
+    ### stress
+    plt.figure(figsize=(10, 4))
+    plt.title('Shear stress [MPa]')
+    visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=(dim(uw.function.evaluate(stress.sym[0], swarm.data), u.pascal).m)/1e6)
+    plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evaluate(vel.sym[0], mesh._centroids)[::n], uw.function.evaluate(vel.sym[1], mesh._centroids)[::n])
+    plt.colorbar(visc_scatter)
 
-        ### stress
-        plt.figure(figsize=(10, 4))
-        plt.title('Pressure [MPa]')
-        visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=(dim(uw.function.evalf(p.sym[0], swarm.data), u.pascal).m)/1e6)
-        plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evalf(vel.sym[0], mesh._centroids)[::n], uw.function.evalf(vel.sym[1], mesh._centroids)[::n])
-        plt.colorbar(visc_scatter)
-    
-    
+    ### stress
+    plt.figure(figsize=(10, 4))
+    plt.title('Pressure [MPa]')
+    visc_scatter = plt.scatter(swarm.data[:,0], swarm.data[:,1], c=(dim(uw.function.evaluate(p.sym[0], swarm.data), u.pascal).m)/1e6)
+    plt.quiver(mesh._centroids[:,0][::n], mesh._centroids[:,1][::n], uw.function.evaluate(vel.sym[0], mesh._centroids)[::n], uw.function.evaluate(vel.sym[1], mesh._centroids)[::n])
+    plt.colorbar(visc_scatter)
+
+
 
 # %%
 

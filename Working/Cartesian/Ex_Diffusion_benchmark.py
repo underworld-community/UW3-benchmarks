@@ -16,6 +16,9 @@
 #
 
 # +
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 import underworld3 as uw
 import numpy as np
 import math
@@ -26,22 +29,29 @@ if uw.mpi.size == 1:
 # #### Setup the mesh params
 
 # +
-# Set the resolution.
-res = 64
+params = uw.Params(
+    uw_res      = 64,
+    uw_t_degree = 4,
+    uw_kappa    = 1.0,
+    uw_tmin     = 0.5,
+    uw_tmax     = 1.0,
+    uw_n_steps  = 11,
+)
 
-Tdegree = 4
+res      = params.uw_res
+Tdegree  = params.uw_t_degree
+k        = params.uw_kappa
+tmin     = params.uw_tmin
+tmax     = params.uw_tmax
+nsteps   = params.uw_n_steps
 
-### diffusivity constant
-k = 1
+show_plot = False
 
 mesh_qdegree = Tdegree
-mesh_qdegree
 
 # +
 xmin, xmax = 0.0, 1.0
 ymin, ymax = 0.0, 1.0
-
-tmin, tmax = 0.5, 1
 # -
 
 # #### Set up the mesh
@@ -54,12 +64,9 @@ mesh = uw.meshing.StructuredQuadBox(
 
 # Create mesh vars
 T = uw.discretisation.MeshVariable("T", mesh, 1, degree=Tdegree)
-T_star = uw.discretisation.MeshVariable("T_star", mesh, 1, degree=Tdegree)
 
 # #### Create the solver
-# using the SNES scalar so nothing is pre-defined
-
-diffusion = uw.systems.SNES_Scalar(mesh, T)
+diffusion = uw.systems.Diffusion(mesh, T, theta=0.5)
 
 # ##### Set up solver parameters
 
@@ -71,52 +78,37 @@ diffusion.add_dirichlet_bc(tmin, "Bottom")
 diffusion.add_dirichlet_bc(tmin, "Top")
 
 
-with mesh.access(T, T_star):
-    T.data[...] = tmin
+T.data[...] = tmin
 
-    T.data[(T.coords[:,1] > 0.4) & (T.coords[:,1] < 0.6)] = tmax
-    T_star.data[:,0] = T.data[:,0]
+T.data[(T.coords[:,1] > 0.4) & (T.coords[:,1] < 0.6)] = tmax
 
 
 # %%
 def plot_fig():
     if uw.mpi.size == 1:
 
-        import numpy as np
         import pyvista as pv
-        import vtk
 
-        pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 250]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-
-        # pv.start_xvfb()
-        mesh.vtk("tmpMsh.vtk")
-        # mesh.vtk("ignore_periodic_mesh.vtk")
-        pvmesh = pv.read("tmpMsh.vtk")
+        pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
         # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 
-        with mesh.access():
-            pvmesh["T"] =  uw.function.evaluate(T.sym[0], mesh.data)
+        pvmesh["T"] =  uw.function.evaluate(T.sym[0], mesh.data)
 
 
         pl = pv.Plotter()
 
         pl.add_mesh(pvmesh, "Black", "wireframe")
 
-        with mesh.access(T):
-            points = np.zeros((T.coords.shape[0],3))
-            points[:,0] = T.coords[:,0]
-            points[:,1] = T.coords[:,1]
-            points[:,2] = 0.0
+        points = np.zeros((T.coords.shape[0],3))
+        points[:,0] = T.coords[:,0]
+        points[:,1] = T.coords[:,1]
+        points[:,2] = 0.0
 
         point_cloud = pv.PolyData(points)
 
-        with mesh.access():
-            point_cloud.point_data["T"] = T.data[:,0]
+        point_cloud.point_data["T"] = T.data[:,0]
 
 
         pl.add_mesh(point_cloud, cmap="coolwarm", edge_color="Black", show_edges=False, scalars="T",
@@ -127,7 +119,8 @@ def plot_fig():
 
         # return vsol
 
-plot_fig()
+if show_plot:
+    plot_fig()
 
 # +
 diffusion.petsc_options['snes_rtol'] = 1e-12
@@ -173,7 +166,7 @@ def diffusion_1D(sample_points, T0, diffusivity, time_1D):
 # +
 ### y coords to sample
 sample_y = np.arange(
-    mesh.data[:, 1].min(), mesh.data[:, 1].max(), 0.1*mesh.get_min_radius()
+    mesh.X.coords[:, 1].min(), mesh.X.coords[:, 1].max(), 0.1*mesh.get_min_radius()
 )  ### Vertical profile
 
 ### x coords to sample
@@ -184,26 +177,16 @@ sample_points[:, 0] = sample_x
 sample_points[:, 1] = sample_y
 # -
 
-T_orig = uw.function.evalf(T.sym[0], sample_points)
+T_orig = uw.function.evaluate(T.sym[0], sample_points).flatten()
 
-# +
-## SNES scalar equation - works
-### Set up the F0 and F1 terms
 dt = mesh.get_min_radius()**2 / k
-
-diffusion.F0 += (T.sym - T_star.sym) / dt
-flux_star = diffusion.constitutive_model.flux
-
-theta = 0.5
-diffusion.F1 += (theta*diffusion.constitutive_model.flux.T) + ((1-theta) * flux_star.T)
-# -
 
 step = 0
 model_time = 0.
 
 if uw.mpi.size == 1:
     plt.plot(sample_points[:,1], T_orig)
-while step < 11:
+while step < nsteps:
 
     ### update terms before solve
     dt = mesh.get_min_radius()**2 / k
@@ -214,18 +197,12 @@ while step < 11:
         
 
     
-    diffusion.solve()
+    diffusion.solve(timestep=dt, zero_init_guess=False)
     ### get the updated temp profile
-    T_new = uw.function.evalf(T.sym[0], sample_points)
-    
+    T_new = uw.function.evaluate(T.sym[0], sample_points).flatten()
+
     if uw.mpi.size == 1:
         plt.plot(sample_points[:,1], T_new)
-    
-    ### update the flux history in case it's non-linear
-    flux_star = diffusion.constitutive_model.flux
-    ### update the unknown history variable
-    with mesh.access(T, T_star):
-        T_star.data[:,0] = T.data[:,0]
 
 
 
@@ -236,7 +213,7 @@ while step < 11:
 # #### Numerical 1D solution to compare against
 
 T_1D = diffusion_1D(sample_points=sample_points[:,1], T0=T_orig.copy(), diffusivity=k, time_1D=model_time)
-T_UW = uw.function.evalf(T.sym[0], sample_points)
+T_UW = uw.function.evaluate(T.sym[0], sample_points).flatten()
 if uw.mpi.size == 1:
     plt.plot(sample_points[:,1], T_1D, label='1D')
     plt.plot(sample_points[:,1], T_UW, label='UW', ls=':', c='k')

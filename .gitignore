@@ -17,9 +17,14 @@
 *.jpg
 
 ### ignore certain dirs
+.claude/
+output/
 *ipynb_checkpoints*
 Working/Cartesian/*/*
 WIP/Cartesian/*
+
+### Ignore CLAUDE.md
+CLAUDE.md
 
 
 

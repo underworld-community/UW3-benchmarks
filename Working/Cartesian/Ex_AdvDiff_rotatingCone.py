@@ -45,13 +45,16 @@
 # [UW2 version](https://github.com/underworldcode/underworld2/blob/master/docs/test/2DCosineHillAdvection.ipynb)
 #
 
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Stokes
 import numpy as np
 import sympy
 from mpi4py import MPI
-
+import os
 import math
 
 if uw.mpi.size == 1:
@@ -59,13 +62,22 @@ if uw.mpi.size == 1:
 
 
 # +
-# Set the resolution.
-res = 32
+params = uw.Params(
+    uw_res     = 32,
+    uw_n_steps = 1,
+    uw_kappa   = 1.0,
+)
+
+res       = params.uw_res
+nsteps    = params.uw_n_steps
+kappa     = params.uw_kappa
+cell_size = 1.0 / res
+
+show_plot = False
 
 # default model parameters
 sigma = 0.2          # width of blob
 x_0   = (1./6, 1./6) # position of blob
-kappa = 1            # thermal diffusion (entire domain)
 # -
 
 xmin, xmax = -0.5, 0.5
@@ -87,7 +99,7 @@ if uw.mpi.rank == 0:
 
 
 mesh = uw.meshing.UnstructuredSimplexBox(
-    minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=0.03, regular=False )
+    minCoords=(xmin, ymin), maxCoords=(xmax, ymax), cellSize=cell_size, regular=False )
 
 # Create an mesh vars
 v = uw.discretisation.MeshVariable("U", mesh, mesh.dim, degree=2)
@@ -99,7 +111,6 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     mesh,
     u_Field=T,
     V_fn=v,
-    solver_name="adv_diff",
 )
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -112,13 +123,12 @@ adv_diff.add_dirichlet_bc(0., "Left")
 adv_diff.add_dirichlet_bc(0., "Right")
 
 
-maxY = mesh.data[:, 1].max()
-minY = mesh.data[:, 1].min()
+maxY = mesh.X.coords[:, 1].max()
+minY = mesh.X.coords[:, 1].min()
 
-with mesh.access(v):
-    # initialise fields
-    v.data[:,0] = -1*v.coords[:,1]
-    v.data[:,1] =  1*v.coords[:,0]
+# initialise fields
+v.data[:,0] = -1*v.coords[:,1]
+v.data[:,1] =  1*v.coords[:,0]
 
 fn_X = (mesh.X[0]-x_0[0])/sigma
 fn_Y = (mesh.X[1]-x_0[1])/sigma
@@ -131,37 +141,25 @@ fn_hill   = 0.25 * ( 1.+sympy.cos(np.pi*fn_X) ) * ( 1.+sympy.cos(np.pi*fn_Y) )
 fn_ic = sympy.Piecewise( (fn_hill, fn_inside),
                          (0., True ) )
 
-with mesh.access(T):
-    T.data[:,0] = uw.function.evaluate(fn_ic, T.coords, mesh.N)
-    T_old = np.copy(T.data[:,0])
-    
-    print(T.data.min(), T.data.max())
+T.array[...] = uw.function.evaluate(fn_ic, T.coords, mesh.N)
+T_old = np.copy(T.data[:,0])
+
+print(T.data.min(), T.data.max())
 
 
 # %%
 def plot_fig():
     if uw.mpi.size == 1:
 
-        import numpy as np
         import pyvista as pv
-        import vtk
 
-        pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 250]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-
-        # pv.start_xvfb()
-        mesh.vtk(outputPath + "advDiff-rotatingCone-Mesh.vtk")
-        # mesh.vtk("ignore_periodic_mesh.vtk")
-        pvmesh = pv.read(outputPath + "advDiff-rotatingCone-Mesh.vtk")
+        pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
         # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 
-        with mesh.access():
-            vsol = v.data.copy()
-            pvmesh["T"] = T.data.copy()
+        vsol = v.data.copy()
+        pvmesh["T"] = T.data.copy()
 
         arrow_loc = np.zeros((v.coords.shape[0], 3))
         arrow_loc[:, 0:2] = v.coords[...]
@@ -208,14 +206,13 @@ def plot_fig():
         # return vsol
 
 
-plot_fig()
+if show_plot:
+    plot_fig()
 
 # ##### Vertical profile across the centre of the box
 
 step = 0
 time = 0.0
-
-nsteps = 1
 
 while step < nsteps:
     ### print some stuff
@@ -237,33 +234,25 @@ while step < nsteps:
     step += 1
     time += dt
 
-plot_fig()
+if show_plot:
+    plot_fig()
 
-with mesh.access(T):
-    T_new = np.copy(T.data[:,0])
+T_new = np.copy(T.data[:,0])
 
 # %%
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 250]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    pvmesh = pv.read(outputPath + "advDiff-rotatingCone-Mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
     # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 
-    with mesh.access():
-        vsol = v.data.copy()
-        pvmesh["T_new"] = T_new
-        pvmesh["T_old"] = T_old
-        pvmesh["dT"] = T_old - T_new
+    vsol = v.data.copy()
+    pvmesh["T_new"] = T_new
+    pvmesh["T_old"] = T_old
+    pvmesh["dT"] = T_old - T_new
 
     arrow_loc = np.zeros((v.coords.shape[0], 3))
     arrow_loc[:, 0:2] = v.coords[...]

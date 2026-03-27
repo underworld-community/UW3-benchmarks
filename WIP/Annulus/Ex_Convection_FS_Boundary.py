@@ -23,6 +23,19 @@ import os
 import sympy
 
 
+params = uw.Params(
+    uw_res                 = 0.075,
+    uw_boundary_conditions = 'FS',
+    uw_Ra           = 1e6,
+    uw_n_steps             = 101,
+)
+
+res                = params.uw_res
+boundaryConditions = params.uw_boundary_conditions
+Ra_number          = params.uw_Ra
+nsteps             = params.uw_n_steps
+
+show_plot = False
 
 
 # +
@@ -46,15 +59,10 @@ rho   = 1.
 T_cmb = 1.
 T_surf= 0.
 
-Ra_number = 1e6
-
-res = 0.075
 
 # +
 ### FS - free slip top, no slip base
 ### NS - no slip top and base
-boundaryConditions = 'FS'
-
 
 outputPath = f'./output/FAC-mantleConvection-{boundaryConditions}-res={res}-penaltyMethod/'
 
@@ -77,28 +85,21 @@ meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=rO, radiusInternal=rIn
 # check the mesh if in a notebook / serial
 
 
-if uw.mpi.size == 1:
-    import numpy as np
-    import pyvista as pv
-    import vtk
+if show_plot:
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            import pyvista as pv
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
+            pv.global_theme.window_size = [750, 750]
+            pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
+            pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
 
-    meshball.vtk(outputPath+"ignore_meshball.vtk")
-    pvmesh = pv.read(outputPath+"ignore_meshball.vtk")
+            pl = pv.Plotter()
 
-    pl = pv.Plotter()
+            # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
+            pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
-
-    pl.show()
+            pl.show()
 
 # +
 v_soln = uw.discretisation.MeshVariable("U", meshball, meshball.dim, degree=2)
@@ -123,7 +124,7 @@ swarm.populate(fill_param=1)
 
 # +
 # Create Stokes object
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln)
 
 ### Add constitutive model
 stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v_soln)
@@ -138,7 +139,6 @@ adv_diff = uw.systems.AdvDiffusion(
     meshball,
     u_Field=t_soln,
     V_Field=v_soln,
-    solver_name="adv_diff",
     verbose=False,
 )
 
@@ -150,9 +150,8 @@ adv_diff.theta = 0.5
 # -
 
 ### set up swarm distribution
-with swarm.access(material):
-    material.data[:] = 0
-    material.data[np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2) <= rInt] = 1
+material.data[:] = 0
+material.data[np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2) <= rInt] = 1
 
 T_density = rho * (1. - (alpha * (t_soln.sym[0] - T_surf)))
 
@@ -189,8 +188,7 @@ def updateFields(time):
     
     
     ### time
-    with meshball.access(timeField):
-        timeField.data[:,0] = time
+    timeField.data[:,0] = time
 # -
 
 # Some useful coordinate stuff
@@ -208,12 +206,10 @@ init_t = 0.02 * sympy.sin(15.0 * th) * sympy.sin(np.pi * (ra - rI) / (rO - rI)) 
 adv_diff.add_dirichlet_bc(T_cmb, "Lower")
 adv_diff.add_dirichlet_bc(T_surf, "Upper")
 
-with meshball.access(t_0, t_soln):
-    t_0.data[...] = uw.function.evaluate(init_t, t_0.coords, meshball.N).reshape(-1, 1)
-    t_soln.data[...] = t_0.data[...]
-    
-with meshball.access(meshr):
-    meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshball.data, meshball.N)  # cf radius_fn which is 0->1
+t_0.array[...] = uw.function.evaluate(init_t, t_0.coords, meshball.N)
+t_soln.data[...] = t_0.data[...]
+
+meshr.X.coords[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshball.X.coords, meshball.N)  # cf radius_fn which is 0->1
 # +
 import sympy
 
@@ -236,7 +232,7 @@ surface_fn = sympy.exp(-(((meshr.sym[0] - rO) / rO) ** 2) * hw)
 base_fn = sympy.exp(-(((meshr.sym[0] - rI) / rO) ** 2) * hw)
 
 import matplotlib.pyplot as plt
-plt.scatter(meshball.data[:,0], meshball.data[:,1], c = uw.function.evalf(surface_fn, meshball.data))
+plt.scatter(meshball.X.coords[:,0], meshball.X.coords[:,1], c = uw.function.evaluate(surface_fn, meshball.X.coords))
 # -
 
 inner_boundary = sympy.sqrt(x**2 + y**2) <= rI+1e-14
@@ -245,7 +241,7 @@ outer_boundary = sympy.sqrt(x**2 + y**2) >= rO-1e-14
 
 
 import matplotlib.pyplot as plt
-plt.scatter(meshball.data[:,0], meshball.data[:,1], c = uw.function.evalf(outer_boundary, meshball.data))
+plt.scatter(meshball.X.coords[:,0], meshball.X.coords[:,1], c = uw.function.evaluate(outer_boundary, meshball.X.coords))
 
 # +
 ### 2D boundary normal
@@ -396,49 +392,40 @@ stokes.solve(zero_init_guess=True)
 # +
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+if show_plot:
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            import pyvista as pv
 
-    import numpy as np
-    import pyvista as pv
-    import vtk
+            pv.global_theme.window_size = [750, 750]
+            pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+            usol = stokes.u.data.copy()
 
-    # pv.start_xvfb()
+            pvmesh.point_data["T"] = uw.function.evaluate(t_soln.sym[0], meshball.X.coords)
+            pvmesh.point_data["Ts"] = uw.function.evaluate(adv_diff._u_star.sym[0], meshball.X.coords)
+            pvmesh.point_data["dT"] = uw.function.evaluate(t_soln.sym[0] - adv_diff._u_star.sym[0], meshball.X.coords)
 
-    pvmesh = pv.read(outputPath+"ignore_meshball.vtk")
+            arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
+            arrow_loc[:, 0:2] = stokes.u.coords[...]
 
-    with meshball.access():
-        usol = stokes.u.data.copy()
+            arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
+            arrow_length[:, 0:2] = usol[...]
 
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.sym[0], meshball.data)
-    pvmesh.point_data["Ts"] = uw.function.evaluate(adv_diff._u_star.sym[0], meshball.data)
-    pvmesh.point_data["dT"] = uw.function.evaluate(t_soln.sym[0] - adv_diff._u_star.sym[0], meshball.data)
+            pl = pv.Plotter(window_size=(750, 750))
 
-    arrow_loc = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = stokes.u.coords[...]
+            # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
-    arrow_length = np.zeros((stokes.u.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
+            pl.add_mesh(
+                pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
+            )
 
-    pl = pv.Plotter(window_size=(750, 750))
+            pl.add_arrows(arrow_loc, arrow_length, mag=5e-4)
+            # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
+            # pl.add_points(pdata)
 
-    pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
-    )
-
-    pl.add_arrows(arrow_loc, arrow_length, mag=5e-4)
-    # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
-
-    # pl.add_points(pdata)
-
-    pl.show(cpos="xy")
+            pl.show(cpos="xy")
 
 
 # -
@@ -458,8 +445,7 @@ def saveData(step, outputPath, time):
 # +
 ### add in NL viscosity
 
-with swarm.access():
-    depth = (rO - np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2))
+depth = (rO - np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2))
 
 tau_y = 1000.
 
@@ -501,10 +487,9 @@ time = 0.
 # +
 # Convection model / update in time
 
-while step < 101:
+while step < nsteps:
 
-    if uw.mpi.rank == 0:
-        print(f"\n\nTimestep: {step}, time: {time}\n\n")
+    uw.pprint(0, f"\n\nTimestep: {step}, time: {time}\n\n")
     
     if step % 5 == 0:
         saveData(step=step, outputPath=outputPath, time = time)

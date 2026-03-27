@@ -9,32 +9,48 @@
 #
 
 # %%
+import sys
 import petsc4py
-from petsc4py import PETSc
+petsc4py.init(sys.argv)
 
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
 
-import os 
+import os
+import math
 import numpy as np
 import sympy
 from sympy.vector import gradient, divergence, dot
-from copy import deepcopy 
 
 # %% [markdown]
 # ### Set parameters to use 
 
 # %%
-Di = 0.5 # dissipation factor 
-Ra = 1e4 #### Rayleigh number
+params = uw.Params(
+    uw_Ra      = 1e4,
+    uw_res     = 32,
+    uw_n_steps = 2,
+    uw_infile  = None,
+)
+
+Ra     = params.uw_Ra
+res    = params.uw_res
+nsteps = params.uw_n_steps
+infile = params.uw_infile
+
+use_checkpoint = infile is not None
+
+show_plot = False
+
+Di = 0.5 # dissipation factor
 
 # other non-dimensional parameters
-alphaBar = 1.      # this is set to 1 in King et al. 
+alphaBar = 1.      # this is set to 1 in King et al.
 gammaR = 1.        # Gruneisen parameter
 cp = 1             # set to 1 for now
 Ts = 0.091         # non-dimensionalized surface temp (273 K/3000 K as per Davies et al)
-rho0  = 1          # non-dimensionalized surface density 
+rho0  = 1          # non-dimensionalized surface density
 
 k = 1.0 #### diffusivity
 
@@ -47,30 +63,18 @@ viscosity = 1
 
 #### run configuration
 tol = 1e-5              ### solver tolerance
-res=  32                 ### x and y res of box
-nsteps = 2             ### maximum number of time steps to run the first model 
-epsilon_lr = 1e-8       ### criteria for early stopping; relative change of the Nusselt number in between iterations  
-use_checkpoint = False   ### if set to True, use T, p, v fields close to steady-state provided in repo
-                        ### will also neglect output config below if set to True
+epsilon_lr = 1e-8       ### criteria for early stopping; relative change of the Nusselt number in between iterations
 
 ##########
 # parameters needed for saving checkpoints
-# will be ignored if use_checkpoint set to True
-outdir = "./output/TALA_test" 
+# checkpoint mode is enabled automatically when uw_infile is set
+outdir = "./output/TALA_test"
 outfile = outdir + "/convection_16"
 save_every = 10
-prev_res = 16           ### if infile is not None, then this should be set to the previous model resolution
-infile = None        ### set infile to a value if there's a checkpoint from a previous run that you want to start from
 ##########
 
-if use_checkpoint:
-    prev_res = 96 
-    infile = "./UW3-benchmarks/Data/TALA_benchmark/TALA_96" 
-    #infile = "/Users/jgra0019/Documents/codes/uw3-dev/benchmarks/UW3-benchmarks/Data/TALA_benchmark/TALA_96"
-
-if not use_checkpoint: 
-    if uw.mpi.rank == 0:
-        os.makedirs(outdir, exist_ok = True)
+if uw.mpi.rank == 0:
+    os.makedirs(outdir, exist_ok = True)
 
 # %% [markdown]
 # ### Create mesh and variables
@@ -111,23 +115,15 @@ temp_bar    = Ts*(sympy.exp(Di*(1 - z)) - 1)            # Ts is the non-dimensio
 # %%
 # visualise the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
-    import numpy as np
+if show_plot and uw.mpi.size == 1:
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
 
-    meshbox.vtk("tmp_box_mesh.vtk")
-    pvmesh = pv.read("tmp_box_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(meshbox)
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
@@ -176,7 +172,6 @@ stokes = Stokes(
     meshbox,
     velocityField=v_soln,
     pressureField=p_soln,
-    solver_name="stokes",
 )
 ''' set-up petsc options here '''
 stokes.petsc_options["snes_type"] = "ksponly"
@@ -202,17 +197,11 @@ stokes.add_dirichlet_bc(sol_vel, "Bottom", [1])
 buoyancy_force = Ra * rhoBar * alphaBar * (t_soln.sym[0] - temp_bar) # directed downwards toward z = 0 (surface)
 stokes.bodyforce = sympy.Matrix([0, buoyancy_force])
 
-# add terms into the conservation of mass according to the formulation of TALA compressible convection
-stokes.PF0 = sympy.Matrix([dot(v_soln.fn, gradient(rhoBar))/rhoBar])
-stokes.UF1 = (-2/3)*divergence(v_soln.fn) * sympy.eye(meshbox.dim)
-
-stokes.stokes_problem_description() 
-
-# %%
-# check the equations for the Stokes system
-display(stokes._p_f0) # LHS of c.o. mass 
-display(stokes._u_f1) # LHS of c.o. momentum
-display(stokes._u_f0) # RHS of c.o. momentum / buoyancy force
+# TALA compressibility:
+# constraints (continuity equation): add compressibility term via stokes.constraints
+stokes.constraints = sympy.Matrix([stokes.div_u + dot(v_soln.fn, gradient(rhoBar)) / rhoBar])
+# penalty (compressible stress correction -2η/3 * div_u * I): use penalty parameter
+stokes.penalty = -2/3 * viscosity
 
 # %% [markdown]
 # ### System set-up (Advection-Diffusion)
@@ -230,7 +219,6 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
     V_fn=v_soln,
-    solver_name="adv_diff",
 )
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -254,7 +242,7 @@ adv_diff.f = (Di/Ra)*(1/(rhoBar*cp))*visc_diss - adiab_heat #- term3
 adv_diff.add_dirichlet_bc(1.0, "Bottom")
 adv_diff.add_dirichlet_bc(0.0, "Top")
 
-adv_diff.adv_diff_slcn_problem_description() # need to run this? 
+adv_diff.theta = 0.5
 
 # %%
 # comp_strainrate = stokes.strainrate -(2/3)*divergence(v_soln.fn) * sympy.eye(meshbox.dim)
@@ -266,60 +254,24 @@ adv_diff.adv_diff_slcn_problem_description() # need to run this?
 # The initial temperature field is set to a sinusoidal perturbation. 
 
 # %%
-import math, sympy
-
 if infile is None:
     pertStrength = 0.1
-    deltaTemp = tempMax - tempMin
 
-    with meshbox.access(t_soln):
-        t_soln.data[:] = 0.
+    T_init = (tempMin + (tempMax - tempMin) * (boxHeight - z)
+              + pertStrength * sympy.cos(sympy.pi * x / boxLength) * sympy.sin(sympy.pi * z / boxLength))
 
-    with meshbox.access(t_soln):
-        for index, coord in enumerate(t_soln.coords):
-            # print(index, coord)
-            pertCoeff = math.cos( math.pi * coord[0]/boxLength ) * math.sin( math.pi * coord[1]/boxLength )
-        
-            t_soln.data[index] = tempMin + deltaTemp*(boxHeight - coord[1]) + pertStrength * pertCoeff
-            t_soln.data[index] = max(tempMin, min(tempMax, t_soln.data[index]))
+    t_soln.data[:] = 0.
+    t_soln.data[:, 0] = np.clip(uw.function.evaluate(T_init, t_soln.coords).squeeze(), tempMin, tempMax)
 else:
-    meshbox_prev = uw.meshing.UnstructuredSimplexBox(
-                                                            minCoords=(0.0, 0.0), 
-                                                            maxCoords=(boxLength, boxHeight), 
-                                                            cellSize=1.0/prev_res,
-                                                            qdegree = 3,
-                                                            regular = False
-                                                        )
-    
-    # T should have high degree for it to converge
-    v_soln_prev = uw.discretisation.MeshVariable("U2", meshbox_prev, meshbox_prev.dim, degree=2) # degree = 2
-    p_soln_prev = uw.discretisation.MeshVariable("P2", meshbox_prev, 1, degree=1) # degree = 1
-    t_soln_prev = uw.discretisation.MeshVariable("T2", meshbox_prev, 1, degree=3) # degree = 3
-
-    v_soln_prev.read_from_vertex_checkpoint(infile + ".U.0.h5", data_name="U")
-    p_soln_prev.read_from_vertex_checkpoint(infile + ".P.0.h5", data_name="P")
-    t_soln_prev.read_from_vertex_checkpoint(infile + ".T.0.h5", data_name="T")
-
-    with meshbox.access(v_soln, t_soln, p_soln):    
-        t_soln.data[:, 0] = uw.function.evaluate(t_soln_prev.sym[0], t_soln.coords)
-        p_soln.data[:, 0] = uw.function.evaluate(p_soln_prev.sym[0], p_soln.coords)
-
-        #for velocity, encounters errors when trying to interpolate in the non-zero boundaries of the mesh variables 
-        v_coords = deepcopy(v_soln.coords)
-
-        v_soln.data[:] = uw.function.evaluate(v_soln_prev.fn, v_coords)
-
-    del meshbox_prev
-    del v_soln_prev
-    del p_soln_prev
-    del t_soln_prev
-
-# %%
-with meshbox.access():
-    print()
+    t_soln.read_timestep(data_filename=infile,
+                         data_name="T",
+                         index=0,
+                         outputPath=outdir)
+    uw.pprint("Reading t_soln from checkpoint file ...")
+    uw.pprint(f"min/max temp: {t_soln.data.min():.4f} / {t_soln.data.max():.4f}", proc="all")
 
 # %% [markdown]
-# ### Some plotting and analysis tools 
+# ### Some plotting and analysis tools
 
 # %%
 # check the mesh if in a notebook / serial
@@ -331,18 +283,11 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
     """
     if uw.mpi.size == 1:
 
-        import numpy as np
         import pyvista as pv
-        import vtk
 
-        pv.global_theme.background = "white"
         pv.global_theme.window_size = [500, 500]
+        pvmesh = uw.visualisation.mesh_to_pv_mesh(meshbox)
         pv.global_theme.anti_aliasing = None #"ssaa", "msaa", "fxaa", or None
-        #pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-
-        meshbox.vtk("tmp_box_mesh.vtk")
-        pvmesh = pv.read("tmp_box_mesh.vtk")
 
         velocity = np.zeros((meshbox.data.shape[0], 3))
         velocity[:, 0] = uw.function.evaluate(v_field.sym[0], meshbox.data)
@@ -356,8 +301,7 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
 
         point_cloud = pv.PolyData(points)
 
-        with meshbox.access():
-            point_cloud.point_data[s_field_name] = uw.function.evaluate(s_field.fn, points[:, 0:2])
+        point_cloud.point_data[s_field_name] = uw.function.evaluate(s_field.fn, points[:, 0:2])
 
         skip = 2
         num_row = len(meshbox._centroids[::skip, 0])
@@ -380,17 +324,16 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
  
         pl = pv.Plotter()
 
-        with meshbox.access():
-            skip = 2
-        
-            num_row = len(v_field.coords[::skip, 0:2])
+        skip = 2
 
-            arrow_loc = np.zeros((num_row, 3))
-            arrow_loc[:, 0:2] = v_field.coords[::skip, 0:2]
+        num_row = len(v_field.coords[::skip, 0:2])
 
-            arrow_length = np.zeros((num_row, 3))
-            arrow_length[:, 0] = v_field.data[::skip, 0]
-            arrow_length[:, 1] = v_field.data[::skip, 1]
+        arrow_loc = np.zeros((num_row, 3))
+        arrow_loc[:, 0:2] = v_field.coords[::skip, 0:2]
+
+        arrow_length = np.zeros((num_row, 3))
+        arrow_length[:, 0] = v_field.data[::skip, 0]
+        arrow_length[:, 1] = v_field.data[::skip, 1]
 
         pl = pv.Plotter()
 
@@ -413,7 +356,7 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
 
         # pl.add_points(pdata)
 
-        pl.show(cpos="xy", jupyter_backend = "panel")
+        pl.show(cpos="xy", jupyter_backend = "trame")
 
         if save_fname is not None:
             #pl.save_graphic(save_fname, dpi = 300)
@@ -424,7 +367,8 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
         pvmesh.clear_point_data()
         
         
-plotFig(meshbox, t_soln, v_soln, "T", save_fname = None, with_arrows = False, cmap = "coolwarm")
+if show_plot:
+    plotFig(meshbox, t_soln, v_soln, "T", save_fname = None, with_arrows = False, cmap = "coolwarm")
 
 # %% [markdown]
 # #### RMS velocity
@@ -531,12 +475,9 @@ while t_step < nsteps:
     viscDissVal[t_step] = visc_diss_int_calc.evaluate()
     adiabHeatVal[t_step] = adiab_heat_int_calc.evaluate()
 
-    # stats then loop
-    tstats = t_soln.stats()
-
     if uw.mpi.rank == 0:
         print("Timestep {}, dt {}".format(t_step, delta_t))
-        print(f't_rms = {t_soln.stats()[6]}, v_rms = {vrmsVal[t_step]}, Nu = {NuVal[t_step]}')
+        print(f'v_rms = {vrmsVal[t_step]}, Nu = {NuVal[t_step]}')
 
         # ''' save mesh variables together with mesh '''
         # if t_step % save_every == 0 and not use_checkpoint:

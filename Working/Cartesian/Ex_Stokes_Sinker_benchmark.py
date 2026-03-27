@@ -12,11 +12,13 @@
 # - [UW2 example](https://github.com/underworldcode/underworld2/blob/master/docs/examples/04_StokesSinker.ipynb)
 
 # %%
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
 import sympy
-import petsc4py
 import pyvista as pv
 
 import os
@@ -29,40 +31,32 @@ petsc4py.get_config()
 
 
 # %%
-### plot figs
-if uw.mpi.size == 1:
-    render = True
-else:
-    render = False
-
+show_plot = False
 
 # %%
-## number of steps
-nsteps = 1
+params = uw.Params(
+    uw_res            = 128,
+    uw_n_steps        = 1,
+    uw_swarm_gpc      = 2,
+    uw_visc_bg        = 1.0,
+    uw_visc_sphere    = 10.0,
+    uw_density_bg     = 1.0,
+    uw_density_sphere = 10.0,
+)
 
-## swarm gauss point count (particle distribution)
-swarmGPC = 2
-
-
-### resolution of model
-res = 128
+res           = params.uw_res
+nsteps        = params.uw_n_steps
+swarmGPC      = params.uw_swarm_gpc
+viscBG        = params.uw_visc_bg
+viscSphere    = params.uw_visc_sphere
+densityBG     = params.uw_density_bg
+densitySphere = params.uw_density_sphere
 
 ### Recycle rate of particles
 recycle_rate = 0
 
-
 ### stokes tolerance
 stokes_tol = 1e-8
-
-# %%
-# Set constants for the viscosity of each material
-viscBG     =  1
-viscSphere =  10
-
-# %%
-# set density of the different materials
-densityBG     =  1
-densitySphere =  10
 
 # %%
 # define some names for our index
@@ -96,22 +90,10 @@ mesh = uw.meshing.StructuredQuadBox(minCoords=(-1.0, 0.0), maxCoords=(1.0, 1.0),
 
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    # pv.start_xvfb()
-
-    mesh.vtk(outputPath + "Stokes_sinker_mesh.vtk")
-    pvmesh = pv.read(outputPath + "Stokes_sinker_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
     # with mesh1.access():
         # usol = stokes.u.data.copy()
@@ -126,9 +108,9 @@ if uw.mpi.size == 1:
     # )
 
     # with swarm.access('M'):
-    #     points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-    #     points[:, 0] = swarm.particle_coordinates.data[:, 0]
-    #     points[:, 1] = swarm.particle_coordinates.data[:, 1]
+    #     points = np.zeros((swarm.data.shape[0], 3))
+    #     points[:, 0] = swarm.data[:, 0]
+    #     points[:, 1] = swarm.data[:, 1]
         
     #     point_cloud = pv.PolyData(points)
         
@@ -171,14 +153,13 @@ stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 # %%
 swarm = uw.swarm.Swarm(mesh=mesh)
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2)
-swarm.populate_petsc(2)
+swarm.populate(fill_param=2)
 
-with swarm.access(material):
-    material.data[...] = materialLightIndex
+material.data[...] = materialLightIndex
 
-    cx, cy, r, m = sphereCentre[0], sphereCentre[1], sphereRadius, materialHeavyIndex
-    inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
-    material.data[inside] = m
+cx, cy, r, m = sphereCentre[0], sphereCentre[1], sphereRadius, materialHeavyIndex
+inside = (swarm.data[:, 0] - cx) ** 2 + (swarm.data[:, 1] - cy) ** 2 < r**2
+material.data[inside] = m
 
 
 
@@ -198,20 +179,10 @@ tracer.add_particles_with_coordinates(tracer_coord)
 # %%
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-
-    pvmesh = pv.read(outputPath + "Stokes_sinker_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
     # with mesh1.access():
         # usol = stokes.u.data.copy()
@@ -225,17 +196,16 @@ if uw.mpi.size == 1:
     #     pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
     # )
 
-    with swarm.access(material):
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
-        
-        point_cloud = pv.PolyData(points)
-        
-        point_cloud.point_data["M"] = material.data.copy()
-        
+    points = np.zeros((swarm.data.shape[0], 3))
+    points[:, 0] = swarm.data[:, 0]
+    points[:, 1] = swarm.data[:, 1]
+
+    point_cloud = pv.PolyData(points)
+
+    point_cloud.point_data["M"] = material.data.copy()
+
     pl.add_points(point_cloud, render_points_as_spheres=False, point_size=5, opacity=0.5)
-    
+
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
     # pl.add_points(pdata)
@@ -295,31 +265,19 @@ def updateFields(time):
 # %%
 def plot_mat():
 
-    import numpy as np
-    import pyvista as pv
-    import vtk
-
-    pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
-
-    pvmesh = pv.read(outputPath + "Stokes_sinker_mesh.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0],3))
-        points[:,0] = swarm.data[:,0]
-        points[:,1] = swarm.data[:,1]
-        points[:,2] = 0.0
+    points = np.zeros((swarm.data.shape[0],3))
+    points[:,0] = swarm.data[:,0]
+    points[:,1] = swarm.data[:,1]
+    points[:,2] = 0.0
 
     point_cloud = pv.PolyData(points)
     
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
-        
+    point_cloud.point_data["M"] = material.data.copy()
+
 
 
 
@@ -403,13 +361,11 @@ stokes.tolerance = stokes_tol
 def saveData(step, outputPath, time):
 
     ### add mesh vars to viewer to save as one h5/xdmf file. Has to be a PETSc object (?)
-    mesh.petsc_save_checkpoint(index=step, 
-                               meshVars=[v, p, strain_rate_inv2,node_viscosity], 
-                                outputPath=outputPath)
-    
-    
+    mesh.write_timestep("checkpoint", index=step, outputPath=outputPath,
+                        meshVars=[v, p, strain_rate_inv2, node_viscosity])
+
     #### save the swarm and selected variables
-    swarm.petsc_save_checkpoint('swarm', step, outputPath)
+    swarm.write_timestep("checkpoint", "swarm", index=step, outputPath=outputPath)
     
 
     
@@ -439,9 +395,8 @@ time = 0.
 # %%
 while step < nsteps:
 
-    with tracer.access():
-        ySinker[step] = tracer.data[:,1][0]
-    
+    ySinker[step] = tracer.data[:,1][0]
+
     tSinker[step] = time
     vrms[step]    = v_rms(mesh, v)
 
@@ -449,7 +404,12 @@ while step < nsteps:
         print('\n\nstep = {0:6d}; time = {1:.3e}; v_rms = {2:.3e}; height = {3:.3e}\n\n'
               .format(step,time,vrms[step],ySinker[step]))
 
-    ### save loop
+    ### solve stokes
+    stokes.solve()
+    ### estimate dt
+    dt = stokes.estimate_dt()
+
+    ### save loop (after solve so mesh vars are initialised)
     if step % 5 == 0:
         if uw.mpi.rank==0:
             print(f'\n\nSave data: \n\n')
@@ -458,19 +418,12 @@ while step < nsteps:
         ### save mesh variables
         saveData(step=step, outputPath=outputPath, time = time)
 
-    
-    ### solve stokes 
-    stokes.solve()
-    ### estimate dt
-    dt = stokes.estimate_dt()
-
-
     ### advect the swarm
     swarm.advection(stokes.u.sym, dt, corrector=False, evalf=True)
-    
+
     tracer.advection(stokes.u.sym, dt, corrector=False, evalf=True)
-    
-        
+
+
     step+=1
     time+=dt
 
@@ -482,14 +435,13 @@ stokesSink_vel = (2/9)*(((densitySphere-densityBG)*(sphereRadius**2)*1)/viscBG)
 stokesSink_vel
 
 # %%
-with tracer.access():
-    tracer_coord = tracer.data
-    
-vel = uw.function.evalf(v.sym[1], tracer_coord)[0]
+tracer_coord = tracer.data
+
+vel = uw.function.evaluate(v.sym[1], tracer_coord).flatten()[0]
 vel
 
 # %%
-if uw.mpi.rank==0:
+if show_plot and uw.mpi.rank == 0:
     print('Initial position: t = {0:.3f}, y = {1:.3f}'.format(tSinker[0], ySinker[0]))
     print('Final position:   t = {0:.3f}, y = {1:.3f}'.format(tSinker[nsteps-1], ySinker[nsteps-1]))
 
@@ -498,14 +450,14 @@ if uw.mpi.rank==0:
     fig = pyplot.figure()
     fig.set_size_inches(12, 6)
     ax = fig.add_subplot(1,1,1)
-    ax.plot(tSinker, ySinker, label='UW results') 
+    ax.plot(tSinker, ySinker, label='UW results')
     ax.plot(tSinker, 0.6-(tSinker*stokesSink_vel), label='analytical solution', ls=':')
     ax.legend()
     ax.set_xlabel('Time')
     ax.set_ylabel('Sinker position')
 
 # %%
-if uw.mpi.size==1 and render == True:
+if show_plot and uw.mpi.size == 1:
     plot_mat()
 
 # %%

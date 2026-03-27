@@ -12,6 +12,9 @@
 # - [ASPECT benchmark](https://aspect-documentation.readthedocs.io/en/latest/user/benchmarks/benchmarks/sinking_block/doc/sinking_block.html)
 
 # %%
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 import underworld3 as uw
 from underworld3.systems import Stokes
@@ -22,26 +25,22 @@ options = PETSc.Options()
 
 
 # %%
-# Set the resolution, a structured quad box of 51x51 is used in the paper
-res = 101
+params = uw.Params(
+    uw_res        = 101,
+    uw_visc_block = 1e21,
+    uw_delta_rho  = 100,
+)
 
-### plot figs
-if uw.mpi.size == 1:
-    render = True
-else:
-    render = False
+# Set the resolution, a structured quad box of 51x51 is used in the paper
+res       = params.uw_res
+viscBlock = params.uw_visc_block
+dRho      = params.uw_delta_rho
+
+show_plot = False
 
 # %%
 ## swarm gauss point count (particle distribution)
 swarmGPC = 3
-
-# %% [markdown]
-# #### Value to change:
-
-# %%
-# viscosity of block in Pa s (the value is ND later), reference is 1e21
-viscBlock = 1e21
-dRho      = 100
 
 # %% [markdown]
 # #### Set up scaling of model
@@ -166,10 +165,9 @@ material  = uw.swarm.IndexSwarmVariable("M", swarm, indices=2)
 swarm.populate(fill_param=swarmGPC)
 
 # %%
-with swarm.access(material):
-    material.data[:] = BGIndex
-    material.data[(swarm.data[:,0] >= box_xmin) & (swarm.data[:,0] <= box_xmax) &
-                  (swarm.data[:,1] >= box_ymin) & (swarm.data[:,1] <= box_ymax)] = BlockIndex
+material.data[:] = BGIndex
+material.data[(swarm.data[:,0] >= box_xmin) & (swarm.data[:,0] <= box_xmax) &
+              (swarm.data[:,1] >= box_ymin) & (swarm.data[:,1] <= box_ymax)] = BlockIndex
 
 
 # %% [markdown]
@@ -203,36 +201,23 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity_fn
 # %%
 def plot_mat():
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
-    pv.global_theme.smooth_shading = True
 
-
-    # mesh.vtk("tempMsh.vtk")
-    # pvmesh = pv.read("tempMsh.vtk") 
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0],3))
-        points[:,0] = swarm.data[:,0]
-        points[:,1] = swarm.data[:,1]
-        points[:,2] = 0.0
+    points = np.zeros((swarm.data.shape[0],3))
+    points[:,0] = swarm.data[:,0]
+    points[:,1] = swarm.data[:,1]
+    points[:,2] = 0.0
 
     point_cloud = pv.PolyData(points)
     
     ### create point cloud for passive tracers
-    with passiveSwarm.access():
-        passiveCloud = pv.PolyData(np.vstack((passiveSwarm.data[:,0],passiveSwarm.data[:,1], np.zeros(len(passiveSwarm.data)))).T)
+    passiveCloud = pv.PolyData(np.vstack((passiveSwarm.data[:,0],passiveSwarm.data[:,1], np.zeros(len(passiveSwarm.data)))).T)
 
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
-        
+    point_cloud.point_data["M"] = material.data.copy()
+
 
 
 
@@ -257,7 +242,7 @@ def plot_mat():
 
     pl.show(cpos="xy")
     
-if render == True & uw.mpi.size==1:
+if show_plot and uw.mpi.size == 1:
     plot_mat()
 
 # %% [markdown]
@@ -281,7 +266,7 @@ stokesSink_vel_dim = dim(-1*stokesSink_vel, u.meter/u.second).m
 
 
 # %%
-vel = dim(uw.function.evalf(v.sym[1], tracer)[0], u.meter/u.second).m
+vel = dim(uw.function.evaluate(v.sym[1], tracer)[0], u.meter/u.second).m
 
 # %%
 vel, stokesSink_vel_dim

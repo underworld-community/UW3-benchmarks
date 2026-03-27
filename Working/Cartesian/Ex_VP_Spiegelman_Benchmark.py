@@ -24,21 +24,31 @@
 # After that, there is some cell data which we can assign to a data structure on the elements (such as a swarm).
 
 # +
+import sys
 import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
 import sympy
 import gmsh
 import os
+from enum import Enum
 
 os.makedirs("meshes", exist_ok=True)
 
-if uw.mpi.size == 1:
+if uw.mpi.rank == 0:
     os.makedirs('./output/SpiegelmanBenchmark/', exist_ok=True)
 
 
 os.environ["UW_TIMING_ENABLE"] = "1"
+
+params = uw.Params(
+    uw_problem_size   = 2,
+    uw_cohesion_pa    = 1e8,
+    uw_friction_angle = 30,
+    uw_tolerance      = 1e-12,
+)
 
 # Define the problem size
 #      1 - ultra low res for automatic checking
@@ -46,7 +56,12 @@ os.environ["UW_TIMING_ENABLE"] = "1"
 #      3 - medium resolution (be prepared to wait)
 #      4 - highest resolution (benchmark case from Spiegelman et al)
 
-problem_size = 2
+problem_size   = params.uw_problem_size
+cohesion_pa    = params.uw_cohesion_pa
+friction_angle = params.uw_friction_angle
+tolerance      = params.uw_tolerance
+
+show_plot = False
 
 # For testing and automatic generation of notebook output,
 # over-ride the problem size if the UW_TESTING_LEVEL is set
@@ -231,6 +246,13 @@ timing.start()
 # ### Import mesh into UW and visualise
 # - Also
 
+class boundaries_2D(Enum):
+    Left   = 1
+    Right  = 2
+    Bottom = 3
+    Top    = 4
+    InnerBoundary = 5
+
 mesh1 = uw.discretisation.Mesh(
     f"./output/SpiegelmanBenchmark/notch_mesh{problem_size}.msh",
     simplex=True,
@@ -238,6 +260,7 @@ mesh1 = uw.discretisation.Mesh(
     markVertices=False,
     useRegions=True,
     useMultipleTags=True,
+    boundaries=boundaries_2D,
 )
 
 # +
@@ -254,21 +277,12 @@ visc = uw.discretisation.MeshVariable(r"\eta", mesh1, 1, degree=1, continuous=Tr
 stress = uw.discretisation.MeshVariable(r"\sigma", mesh1, 1, degree=1, continuous=True)
 # -
 
-if uw.mpi.size == 1:
-    import numpy as np
+if show_plot and uw.mpi.size == 1:
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    mesh1.vtk('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
-    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh1)
 
     pl = pv.Plotter()
 
@@ -358,27 +372,18 @@ swarm.dm.restoreField("mat")
 lvec.isset(indexSetW, 0)
 lvec.isset(indexSetS, 1)
 
-with swarm.access(material, mat):
-    material.data[:, 0] = lvec.array[:]
-    mat.data[:, 0] = lvec.array[:]
-    print(np.unique(lvec))
+material.data[:, 0] = lvec.array[:]
+mat.data[:, 0] = lvec.array[:]
+print(np.unique(lvec))
 
 # check the mesh and material mapping if in a notebook / serial
 
-if uw.mpi.size == 1:
-    import numpy as np
+if show_plot and uw.mpi.size == 1:
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh1)
 
     pl = pv.Plotter()
 
@@ -386,18 +391,16 @@ if uw.mpi.size == 1:
     # points[:, 0] = mesh1._centroids[:, 0]
     # points[:, 1] = mesh1._centroids[:, 1]
 
-    with swarm.access():
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
+    points = np.zeros((swarm.data.shape[0], 3))
+    points[:, 0] = swarm.data[:, 0]
+    points[:, 1] = swarm.data[:, 1]
 
     point_cloud = pv.PolyData(points)
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pvmesh.point_data["eta"] = uw.function.evaluate(
-        material.sym[0], mesh1.data, mesh1.N
+        material.sym[0], mesh1.X.coords, mesh1.N
     )
 
     # pl.add_mesh(
@@ -426,7 +429,6 @@ stokes = uw.systems.Stokes(
     mesh1,
     velocityField=v_soln,
     pressureField=p_soln,
-    solver_name="stokes",
     verbose=False,
 )
 
@@ -480,45 +482,36 @@ stress_calc.smoothing = 1.0e-3
 # #### create function to plot the model strain rate
 
 def plotFig():
-    import numpy as np
     import pyvista as pv
-    import vtk
-    
+
     stress_calc.uw_function = (
         2 * visc_fn * stokes.Unknowns.Einv2
     )
 
     viscosity_calc.uw_function = stokes.constitutive_model.Parameters.shear_viscosity_0
-    
+
     viscosity_calc.solve()
     strain_rate_calc.solve()
     stress_calc.solve()
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [1050, 500]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, 1.0]
-
-    pvmesh = pv.read('./output/SpiegelmanBenchmark/SpiegelmanMesh.vtk')
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh1)
 
     points = np.zeros((mesh1._centroids.shape[0], 3))
     points[:, 0] = mesh1._centroids[:, 0]
     points[:, 1] = mesh1._centroids[:, 1]
 
     # pvmesh.point_data["sfn"] = uw.function.evaluate(
-    #     surface_defn_fn, mesh1.data, mesh1.N
+    #     surface_defn_fn, mesh1.X.coords, mesh1.N
     # )
     pvmesh.point_data["pres"] = uw.function.evaluate(p_soln.sym[0], mesh1.data)
     pvmesh.point_data["edot"] = uw.function.evaluate(edot.sym[0], mesh1.data)
-    # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh1.data, mesh1.N)
+    # pvmesh.point_data["tauy"] = uw.function.evaluate(tau_y, mesh1.X.coords, mesh1.N)
     pvmesh.point_data["eta"] = visc.rbf_interpolate(visc.coords, nnn=1) #uw.function.evaluate(visc.sym[0], mesh1.data)
     pvmesh.point_data["str"] = uw.function.evaluate(stress.sym[0], mesh1.data)
 
-    with mesh1.access():
-        usol = v_soln.data.copy()
+    usol = v_soln.data.copy()
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
     arrow_loc[:, 0:2] = v_soln.coords[...]
@@ -528,8 +521,7 @@ def plotFig():
 
     point_cloud = pv.PolyData(points)
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
+    point_cloud.point_data["M"] = material.data.copy()
 
     pl = pv.Plotter()
 
@@ -579,7 +571,7 @@ stokes.petsc_options["snes_max_it"] = 500
 stokes.petsc_options["snes_converged_reason"] = None
 
 ### sets the relative tolerance
-stokes.tolerance = 1e-12
+stokes.tolerance = tolerance
 # -
 
 # #### Initial linear solve
@@ -612,7 +604,7 @@ if uw.mpi.rank == 0:
 # -
 
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
     plotFig()
 
 # #### Add in VP material
@@ -623,7 +615,7 @@ if uw.mpi.size == 1:
 
 # +
 ### top
-nd_C = nd(1e8*u.pascal)
+nd_C = nd(cohesion_pa * u.pascal)
 
 tau_y = nd_C 
 
@@ -646,21 +638,20 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
 stokes.solve(zero_init_guess=False)
 
 
-if uw.mpi.size ==1:
+if show_plot and uw.mpi.size == 1:
     plotFig()
 
-if uw.mpi.size ==1:
+if show_plot and uw.mpi.size == 1:
     import matplotlib.pyplot as plt
-    with mesh1.access(visc):
-        plt.scatter(visc.coords[:,0], visc.coords[:,1], c = visc.data)
+    plt.scatter(visc.coords[:,0], visc.coords[:,1], c = visc.data)
 
 # ### Add in depth depedency
 # - Depth-dependent von Mises (lithostatic pressure only)
 
 # +
-nd_C = nd(1e8*u.pascal)
+nd_C = nd(cohesion_pa * u.pascal)
 
-phi = 30 ### in degrees
+phi = friction_angle ### in degrees
 fc = np.sin(np.deg2rad(phi))
 
 ### lithoP = Rho0 * g * h
@@ -684,7 +675,7 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
 # +
 max_lithoP = (10e3*9.81*2.7e3)
 
-model_max_lithoP = (dim(uw.function.evaluate(nd_lithoP, mesh1.data, mesh1.N), u.pascal).m).max()
+model_max_lithoP = (dim(uw.function.evaluate(nd_lithoP, mesh1.X.coords, mesh1.N), u.pascal).m).max()
 
 #### check if lithostatic pressure is scaled correctly
 np.isclose(max_lithoP, model_max_lithoP)
@@ -692,7 +683,7 @@ np.isclose(max_lithoP, model_max_lithoP)
 
 stokes.solve(zero_init_guess=False, picard=0)
 
-if uw.mpi.size ==1:
+if show_plot and uw.mpi.size == 1:
     plotFig()
 
 # ### Now try the full Drucker-Prager yielding term
@@ -700,9 +691,9 @@ if uw.mpi.size ==1:
 # - And the dynamic pressure term from the solve
 
 # +
-nd_C = nd(1e8*u.pascal)
+nd_C = nd(cohesion_pa * u.pascal)
 
-phi = 30 ### in degrees
+phi = friction_angle ### in degrees
 fc = np.sin(np.deg2rad(phi))
 
 
@@ -736,8 +727,6 @@ stokes.constitutive_model.Parameters.shear_viscosity_0 = visc_fn
 
 
 stokes.solve(picard=0, zero_init_guess=False)
-# -
 
-
-
-
+if show_plot and uw.mpi.size == 1:
+    plotFig()

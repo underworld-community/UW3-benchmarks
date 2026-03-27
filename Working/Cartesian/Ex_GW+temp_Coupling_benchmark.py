@@ -47,6 +47,9 @@
 #
 
 # +
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
@@ -55,13 +58,23 @@ import sympy
 options = PETSc.Options()
 # -
 
+# +
+params = uw.Params(
+    uw_res = 40,
+)
+
+res = params.uw_res
+
+show_plot = False
+# -
+
 # #### Set up the mesh and mesh vars
 
 # +
 minX, maxX =  0.0, 4.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.025, qdegree=3, regular=False)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=1.0/res, qdegree=3, regular=False)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY),
@@ -78,21 +91,13 @@ y = mesh.N.y
 
 # +
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
     # plot the mesh
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = 'ssaa'
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
     pl = pv.Plotter()
 
@@ -184,29 +189,20 @@ darcy.solve()
 # +
 ### Visualise the result
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
     v_soln = gw_v_soln
     p_soln = gw_p_soln
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [1250, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    usol = v_soln.data.copy()
 
-    with mesh.access():
-        usol = v_soln.data.copy()
-
-    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, mesh.data, mesh.N)
-    pvmesh.point_data["K"] = uw.function.evaluate(kFunc, mesh.data, mesh.N)
+    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, mesh.X.coords, mesh.N)
+    pvmesh.point_data["K"] = uw.function.evaluate(kFunc, mesh.X.coords, mesh.N)
     # pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
@@ -267,8 +263,7 @@ if uw.mpi.size == 1:
 tempAdvDiff = uw.systems.Poisson(mesh, t_soln)
 
 ### set up initial temp field from 0 (top) to 1 (bottom)
-with mesh.access(t_soln):
-    t_soln.data[:,0] = uw.function.evalf(initialTemperature, t_soln.coords)
+t_soln.data[:,0] = uw.function.evaluate(initialTemperature, t_soln.coords).flatten()
 
 # #### Set up properties of the system
 
@@ -291,7 +286,7 @@ tempAdvDiff.constitutive_model = uw.constitutive_models.DiffusionModel
 
 tempAdvDiff.constitutive_model.Parameters.diffusivity = thermalDiff
 
-tempAdvDiff.f = -1*coeff*v_soln.sym.dot(t_soln.gradient())
+tempAdvDiff.f = -1*coeff*gw_v_soln.sym.dot(t_soln.gradient())
 
 # +
 tempAdvDiff.petsc_options["snes_converged_reason"] = None
@@ -309,29 +304,20 @@ tempAdvDiff.solve()
 # +
 ### Visualise the result
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
     v_soln = gw_v_soln
     p_soln = gw_p_soln
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [1250, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    usol = v_soln.data.copy()
 
-    with mesh.access():
-        usol = v_soln.data.copy()
-
-    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.sym, mesh.data, mesh.N)
-    pvmesh.point_data["K"] = uw.function.evaluate(kFunc, mesh.data, mesh.N)
+    pvmesh.point_data["T"] = uw.function.evaluate(t_soln.sym, mesh.X.coords, mesh.N)
+    pvmesh.point_data["K"] = uw.function.evaluate(kFunc, mesh.X.coords, mesh.N)
     # pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
@@ -410,7 +396,7 @@ if uw.mpi.rank == 0:
 
 for xpos in [0.,1.,maxX]:
     arrT = np.zeros(n)
-    arrT = uw.function.evalf(t_soln.sym, np.vstack([np.zeros_like(arrY)+xpos,arrY]).T)
+    arrT = uw.function.evaluate(t_soln.sym, np.vstack([np.zeros_like(arrY)+xpos,arrY]).T).flatten()
 
     if uw.mpi.rank == 0:
         plt.plot(arrT,arrY,label="x=%i" %xpos)
@@ -434,7 +420,7 @@ if uw.mpi.rank == 0:
     plt.xlim(0,1)
     plt.ylim(-1,0)
     plt.title('Temperature Profiles')
-    if uw.mpi.size == 1:
+    if show_plot and uw.mpi.size == 1:
         plt.show()
 
     # plt.savefig("Geotherms.pdf")
@@ -444,13 +430,14 @@ if uw.mpi.rank == 0:
 # x = 1, the interface between the high (x < 1) and low (x > 1) hydraulic conductivity (and the flow field) <br>
 # x = 2, the area with low hydrauilic conductivity
 
-x = np.linspace(minX, maxX, 201)
-y = np.zeros_like(x)+0.5
+if show_plot and uw.mpi.size == 1:
+    x = np.linspace(minX, maxX, 201)
+    y = np.zeros_like(x)+0.5
 
-vel_y = uw.function.evalf(v_soln.sym[1], np.vstack([x,y]).T)
+    vel_y = uw.function.evaluate(gw_v_soln.sym[1], np.vstack([x,y]).T).flatten()
 
-plt.plot(x, vel_y)
-plt.xlabel('x coord')
-plt.ylabel('y velocity')
+    plt.plot(x, vel_y)
+    plt.xlabel('x coord')
+    plt.ylabel('y velocity')
 
 

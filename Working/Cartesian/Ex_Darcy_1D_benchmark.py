@@ -19,6 +19,9 @@
 # Change benchmark version to test the piecewise (0) or swarm (1) approach for the hydraulic conductivity layout
 
 # +
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 import underworld3 as uw
 import numpy as np
@@ -33,7 +36,23 @@ options = PETSc.Options()
 # *1* for swarm-based
 #
 
-benchmark_version = 0
+params = uw.Params(
+    uw_res          = 20,
+    uw_k1           = 1.0,
+    uw_k2           = 1.0e-4,
+    uw_max_pressure = 0.5,
+    uw_interface_y  = -0.25,
+)
+
+res          = params.uw_res
+k1           = params.uw_k1
+k2           = params.uw_k2
+max_pressure = params.uw_max_pressure
+interfaceY   = params.uw_interface_y
+
+benchmark_version = 0  # 0 = piecewise, 1 = swarm-based
+
+show_plot = False
 
 # #### Set up the mesh and mesh vars
 
@@ -41,7 +60,7 @@ benchmark_version = 0
 minX, maxX = -1.0, 0.0
 minY, maxY = -1.0, 0.0
 
-mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=0.05, qdegree=2, regular=False)
+mesh = uw.meshing.UnstructuredSimplexBox(minCoords=(minX, minY), maxCoords=(maxX, maxY), cellSize=1.0/res, qdegree=2, regular=False)
 
 # mesh = uw.meshing.StructuredQuadBox(elementRes=(20,20),
 #                                       minCoords=(minX,minY),
@@ -57,21 +76,13 @@ y = mesh.N.y
 
 # +
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
     # plot the mesh
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = 'ssaa'
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
     pl = pv.Plotter()
 
@@ -94,18 +105,12 @@ darcy.constitutive_model = uw.constitutive_models.DiffusionModel
 # +
 # Groundwater pressure boundary condition on the bottom wall
 
-max_pressure = 0.5
 initialPressure = -1.0 * y * max_pressure
 
 # +
 # set up two materials
 
-interfaceY = -0.25
-
 from sympy import Piecewise, ceiling, Abs
-
-k1 = 1.0
-k2 = 1.0e-4
 
 
 # +
@@ -117,9 +122,8 @@ if benchmark_version == 1:
     
     swarm.populate_petsc(fill_param=2)
 
-    with swarm.access(material):
-        material.data[swarm.data[:, 1] >= interfaceY] = 0
-        material.data[swarm.data[:, 1] < interfaceY] = 1
+    material.data[swarm.data[:, 1] >= interfaceY] = 0
+    material.data[swarm.data[:, 1] < interfaceY] = 1
 
     mat_k = np.array([k1, k2])
 
@@ -168,26 +172,17 @@ darcy.solve()
 # +
 ### Visualise the result
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [1250, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    usol = v_soln.data.copy()
 
-    with mesh.access():
-        usol = v_soln.data.copy()
-
-    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, mesh.data, mesh.N)
-    pvmesh.point_data["K"] = uw.function.evaluate(kFunc, mesh.data, mesh.N)
+    pvmesh.point_data["P"] = uw.function.evaluate(p_soln.fn, mesh.X.coords, mesh.N)
+    pvmesh.point_data["K"] = uw.function.evaluate(kFunc, mesh.X.coords, mesh.N)
     # pvmesh.point_data["S"]  = uw.function.evaluate(sympy.log(v_soln.fn.dot(v_soln.fn)), mesh.data)
 
     arrow_loc = np.zeros((v_soln.coords.shape[0], 3))
@@ -234,10 +229,10 @@ if uw.mpi.size == 1:
 # +
 # set up interpolation coordinates
 ycoords = np.linspace(minY + 0.01 * (maxY - minY), maxY - 0.01 * (maxY - minY), 100)
-xcoords = np.full_like(ycoords, -1)
+xcoords = np.full_like(ycoords, 0.5 * (minX + maxX))
 xy_coords = np.column_stack([xcoords, ycoords])
 
-pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords)
+pressure_interp = uw.function.evaluate(p_soln.sym[0], xy_coords).flatten()
 # -
 
 
