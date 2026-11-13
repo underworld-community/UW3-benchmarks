@@ -9,33 +9,43 @@
 import numpy as np
 import os
 import math
-import underworld3
-
 import sympy
 
-
+from petsc4py import PETSc
+import underworld3 as uw
+from underworld3.systems import Stokes
 from underworld3.utilities import generateXdmf
+
+params = uw.Params(
+    uw_res_x     = 128,
+    uw_res_y     = 64,
+    uw_n_steps   = 50,
+    uw_tolerance = 1e-4,
+)
+
+xres      = params.uw_res_x
+yres      = params.uw_res_y
+max_steps = params.uw_n_steps
+tolerance = params.uw_tolerance
 
 
 # %%
 expt_name = 'output/thrustWedge/'
 
 # Make output directory if necessary.
-from mpi4py import MPI
-if MPI.COMM_WORLD.rank==0:
+if uw.mpi.rank == 0:
     ### delete previous model run
     if os.path.exists(expt_name):
         for i in os.listdir(expt_name):
             os.remove(expt_name + i)
-            
+
     ### create folder if not run before
     if not os.path.exists(expt_name):
         os.makedirs(expt_name)
 
 
 # %%
-### For visualisation
-render = True
+show_plot = False
 
 
 # %%
@@ -48,12 +58,6 @@ render = True
 #    "pc_type": "lu",
 #    "pc_factor_mat_solver_type": "mumps",
 #}
-
-
-# %%
-from petsc4py import PETSc
-import underworld3 as uw
-from underworld3.systems import Stokes
 
 options = PETSc.Options()
 
@@ -94,9 +98,6 @@ ymin, ymax = nd(-7 * u.kilometer), nd(9 * u.kilometer)
 # yres = 24
 # xres = yres * (round((xmax-xmin)/(ymax - ymin)))
 
-xres = 128
-yres = 64
-
 # %% [markdown]
 # ### Create mesh and mesh vars
 
@@ -136,7 +137,7 @@ stokes.constitutive_model = uw.systems.constitutive_models.ViscousFlowModel(v)
 # #### Solver for lithostatic pressure calc
 
 # %%
-lithoP_solver = uw.systems.SteadyStateDarcy(mesh, lithoP, vlithoP, solver_name='lithoP_solver')
+lithoP_solver = uw.systems.SteadyStateDarcy(mesh, lithoP, vlithoP)
 lithoP_solver.constitutive_model = uw.systems.constitutive_models.DiffusionModel(lithoP)
 lithoP_solver.constitutive_model.Parameters.diffusivity = 1e-6
 lithoP_solver.petsc_options.delValue("ksp_monitor")
@@ -176,7 +177,7 @@ swarm.populate(4)
 
 # with swarm.access(swarm.particle_coordinates):
 #     factor = 0.5*boxLength/n_els/ppcell
-#     swarm.particle_coordinates.data[:] += factor*np.random.rand(*swarm.particle_coordinates.data.shape)
+#     swarm.data[:] += factor*np.random.rand(*swarm.data.shape)
       
 
 
@@ -187,7 +188,7 @@ swarm.populate(4)
 surfaceSwarm = uw.swarm.Swarm(mesh)
 
 # %%
-x = np.linspace(mesh.data[:,0].min(), mesh.data[:,0].max(), 500 )
+x = np.linspace(mesh.X.coords[:,0].min(), mesh.X.coords[:,0].max(), 500 )
 y = np.zeros_like(x)
 
 # %%
@@ -255,21 +256,20 @@ def update_strain(dt, strain_var, healingRate=0.):
     
     updateSR()
     
-    with swarm.access(strain):
-        ### rbf interpolate is quicker, does not produce negative results.
-        ### how does this work in parallel?
-        SR_swarm = strain_rate_inv2.rbf_interpolate(strain_var.swarm.data)[:,0] 
-        
-        ### function evaluate (projection) produces negative SR results
-        # SR_swarm = uw.function.evalf(strain_rate_inv2.sym[0], strain_var.swarm.data)
-        
-        #### dt / SR 
-        ### add the strain into the model
-        strain_var.data[:,0] += (dt * SR_swarm)
-        ### heal the strain at a given rate
-        strain_var.data[:,0] -= (dt * healingRate)
-        ### make sure the healing does not go below zero
-        strain_var.data[strain_var.data < 0] = 0.
+    ### rbf interpolate is quicker, does not produce negative results.
+    ### how does this work in parallel?
+    SR_swarm = strain_rate_inv2.rbf_interpolate(strain_var.swarm.data)[:,0] 
+
+    ### function evaluate (projection) produces negative SR results
+    # SR_swarm = uw.function.evaluate(strain_rate_inv2.sym[0], strain_var.swarm.data)
+
+    #### dt / SR 
+    ### add the strain into the model
+    strain_var.data[:,0] += (dt * SR_swarm)
+    ### heal the strain at a given rate
+    strain_var.data[:,0] -= (dt * healingRate)
+    ### make sure the healing does not go below zero
+    strain_var.data[strain_var.data < 0] = 0.
 
 # %% [markdown]
 # ## Setup the material distribution
@@ -301,56 +301,44 @@ sed0_list = np.arange(top_pile, bottom_pile-layer_thickness, -2*layer_thickness)
 sed_list = np.arange(top_pile, bottom_pile-layer_thickness, -layer_thickness)
 
 # %%
-with swarm.access(materialVariable, material):
-    materialVariable.data[:] = airIndex
-    for i in sed_list:
-        if np.isin(i, sed0_list):
-            materialVariable.data[swarm.data[:,1] <= i] = sediment0
-        else:
-            materialVariable.data[swarm.data[:,1] <= i] = sediment1
-    
-    
-    
-    materialVariable.data[swarm.data[:,1] <= ymin+nd(1*u.kilometer)]   = fritionalBase
-    materialVariable.data[swarm.data[:,1] <= ymin+nd(0.5*u.kilometer)] = ridgidBase
-    
-    material.data[:,0] = materialVariable.data[:,0]
-    
-    
-        
-    
-    
-    
-    
+materialVariable.data[:] = airIndex
+for i in sed_list:
+    if np.isin(i, sed0_list):
+        materialVariable.data[swarm.data[:,1] <= i] = sediment0
+    else:
+        materialVariable.data[swarm.data[:,1] <= i] = sediment1
+
+
+
+materialVariable.data[swarm.data[:,1] <= ymin+nd(1*u.kilometer)]   = fritionalBase
+materialVariable.data[swarm.data[:,1] <= ymin+nd(0.5*u.kilometer)] = ridgidBase
+
+material.data[:,0] = materialVariable.data[:,0]
+
+
+
+
+
+
+
 
 # %%
 def plot_mat():
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = 'white'
     # pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
-
-    mesh.vtk("tempMsh.vtk")
-    pvmesh = pv.read("tempMsh.vtk") 
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0],3))
-        points[:,0] = swarm.data[:,0]
-        points[:,1] = swarm.data[:,1]
-        points[:,2] = 0.0
+    points = np.zeros((swarm.data.shape[0],3))
+    points[:,0] = swarm.data[:,0]
+    points[:,1] = swarm.data[:,1]
+    points[:,2] = 0.0
 
     point_cloud = pv.PolyData(points)
 
 
-    with swarm.access():
-        point_cloud.point_data["M"] = materialVariable.data.copy()
+    point_cloud.point_data["M"] = materialVariable.data.copy()
 
 
 
@@ -371,7 +359,7 @@ def plot_mat():
 
     pl.show(cpos="xy")
  
-if render == True:
+if show_plot:
     plot_mat()
 
 # %% [markdown]
@@ -398,19 +386,16 @@ stokes.bodyforce
 # %%
 def determine_lithostatic_pressure(dt):
     update_density()
-    if uw.mpi.rank == 0:
-        print('calculating lithostatic pressure')
+    uw.pprint(0, 'calculating lithostatic pressure')
 
     ### get original coords
-    with surfaceSwarm.access(surfaceSwarm.particle_coordinates):
-        x_old = uw.utilities.gather_data(surfaceSwarm.particle_coordinates.data[:,0], bcast=True)
-        y_old = uw.utilities.gather_data(surfaceSwarm.particle_coordinates.data[:,1], bcast=True)
+    x_old = uw.utilities.gather_data(surfaceSwarm.data[:,0], bcast=True)
+    y_old = uw.utilities.gather_data(surfaceSwarm.data[:,1], bcast=True)
 
     ### advect surface
-    with surfaceSwarm.access():
-        v_x = uw.utilities.gather_data(uw.function.evalf(v.sym[0], surfaceSwarm.data), bcast=True)
-        v_y = uw.utilities.gather_data(uw.function.evalf(v.sym[1], surfaceSwarm.data), bcast=True)
-        
+    v_x = uw.utilities.gather_data(uw.function.evaluate(v.sym[0], surfaceSwarm.data), bcast=True)
+    v_y = uw.utilities.gather_data(uw.function.evaluate(v.sym[1], surfaceSwarm.data), bcast=True)
+
     x_new = x_old + (v_x*dt)
     y_new = y_old + (v_y*dt)
 
@@ -418,16 +403,14 @@ def determine_lithostatic_pressure(dt):
     f = interp1d(x_new, y_new, kind='cubic', fill_value='extrapolate')
     
     ### update the y coords only of the passive tracers
-    with surfaceSwarm.access(surfaceSwarm.particle_coordinates):
-        surfaceSwarm.particle_coordinates.data[:,1] = f(surfaceSwarm.particle_coordinates.data[:,0])
+    surfaceSwarm.data[:,1] = f(surfaceSwarm.data[:,0])
 
     ### calculate the density based on rho*g*h
-    with mesh.access(lithoP, density_proj):
-        rho = density_proj.data[:,0]
-        g = nd_gravity
-        h = f(lithoP.coords[:,0]) - lithoP.coords[:,1] ### dh between point and surface
-        lithoP.data[:,0] = rho  * g * h ### rho * g * h
-        lithoP.data[lithoP.data < 0] = nd(1*u.atmosphere)
+    rho = density_proj.data[:,0]
+    g = nd_gravity
+    h = f(lithoP.coords[:,0]) - lithoP.coords[:,1] ### dh between point and surface
+    lithoP.data[:,0] = rho  * g * h ### rho * g * h
+    lithoP.data[lithoP.data < 0] = nd(1*u.atmosphere)
 
 
 # %%
@@ -437,79 +420,73 @@ determine_lithostatic_pressure(dt=0)
 # determine_lithostatic_pressure(bodyforce=stokes.bodyforce, solver=lithoP_solver)
 
 # %%
-if uw.mpi.size == 1 and uw.is_notebook:
-    import matplotlib.pyplot as plt
-    with mesh.access(lithoP):
-        scatter = plt.scatter(lithoP.coords[:,0], lithoP.coords[:,1], c=lithoP.data)
-        plt.colorbar(scatter)
+if show_plot:
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            import matplotlib.pyplot as plt
+            scatter = plt.scatter(lithoP.coords[:,0], lithoP.coords[:,1], c=lithoP.data)
+            plt.colorbar(scatter)
 
 # %%
-if uw.mpi.size == 1 and uw.is_notebook:
+if show_plot:
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
 
-    import numpy as np
-    import pyvista as pv
-    import vtk
+            import pyvista as pv
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [1250, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+            pv.global_theme.window_size = [1250, 750]
+            pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+            usol = v.data.copy()
 
-    with mesh.access():
-        usol = v.data.copy()
+            pvmesh.point_data["P"] = uw.function.evaluate(lithoP.sym[0], mesh.X.coords, mesh.N)
 
-    pvmesh.point_data["P"] = uw.function.evalf(lithoP.sym[0], mesh.data, mesh.N)
+            arrow_loc = np.zeros((v.coords.shape[0], 3))
+            arrow_loc[:, 0:2] = v.coords[...]
 
-    arrow_loc = np.zeros((v.coords.shape[0], 3))
-    arrow_loc[:, 0:2] = v.coords[...]
+            arrow_length = np.zeros((v.coords.shape[0], 3))
+            arrow_length[:, 0:2] = usol[...]
 
-    arrow_length = np.zeros((v.coords.shape[0], 3))
-    arrow_length[:, 0:2] = usol[...]
+            # point sources at cell centres
 
-    # point sources at cell centres
+            points = np.zeros((mesh._centroids.shape[0], 3))
+            points[:, 0] = mesh._centroids[:, 0]
+            points[:, 1] = mesh._centroids[:, 1]
+            point_cloud = pv.PolyData(points[::3])
 
-    points = np.zeros((mesh._centroids.shape[0], 3))
-    points[:, 0] = mesh._centroids[:, 0]
-    points[:, 1] = mesh._centroids[:, 1]
-    point_cloud = pv.PolyData(points[::3])
+            v_vectors = np.zeros((mesh.data.shape[0], 3))
+            v_vectors[:, 0] = uw.function.evaluate(v.sym[0], mesh.X.coords, mesh.N)
+            v_vectors[:, 1] = uw.function.evaluate(v.sym[1], mesh.X.coords, mesh.N)
+            pvmesh.point_data["V"] = v_vectors
 
-    v_vectors = np.zeros((mesh.data.shape[0], 3))
-    v_vectors[:, 0] = uw.function.evalf(v.sym[0], mesh.data, mesh.N)
-    v_vectors[:, 1] = uw.function.evalf(v.sym[1], mesh.data, mesh.N)
-    pvmesh.point_data["V"] = v_vectors
+            pvstream = pvmesh.streamlines_from_source(
+                point_cloud,
+                vectors="V",
+                integrator_type=45,
+                integration_direction="both",
+                max_steps=1000,
+                max_time=0.2,
+                initial_step_length=0.001,
+                max_step_length=0.01,
+            )
 
-    pvstream = pvmesh.streamlines_from_source(
-        point_cloud,
-        vectors="V",
-        integrator_type=45,
-        integration_direction="both",
-        max_steps=1000,
-        max_time=0.2,
-        initial_step_length=0.001,
-        max_step_length=0.01,
-    )
+            pl = pv.Plotter()
 
-    pl = pv.Plotter()
+            pl.add_mesh(
+                pvmesh,
+                cmap="coolwarm",
+                edge_color="Black",
+                show_edges=False,
+                scalars="P",
+                use_transparency=False,
+                opacity=1.0,
+            )
 
-    pl.add_mesh(
-        pvmesh,
-        cmap="coolwarm",
-        edge_color="Black",
-        show_edges=False,
-        scalars="P",
-        use_transparency=False,
-        opacity=1.0,
-    )
+            pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
 
-    pl.add_arrows(arrow_loc, arrow_length, mag=0.5, opacity=0.75)
+            # pl.add_mesh(pvstream, line_width=10.0)
 
-    # pl.add_mesh(pvstream, line_width=10.0)
-
-    pl.show(cpos="xy")
+            pl.show(cpos="xy")
 
 # %% [markdown]
 # ### Boundary conditions
@@ -648,7 +625,7 @@ stokes.saddle_preconditioner = 1 / stokes.constitutive_model.Parameters.shear_vi
 stokes.solve(zero_init_guess=False)
 
 # %%
-stokes.tolerance = 1e-4
+stokes.tolerance = tolerance
 
 # %% [markdown]
 # ### Main loop
@@ -656,7 +633,6 @@ stokes.tolerance = 1e-4
 
 # %%
 step      = 0
-max_steps = 50
 time      = 0
 
 
@@ -671,9 +647,8 @@ while step<max_steps:
           
     #viz for parallel case - write the hdf5s/xdmfs 
     if step%5==0:
-        if uw.mpi.rank == 0:
-            print(f'\nSave data: ')
-            
+        uw.pprint(0, f'\nSave data: ')
+
         ### updates projection of fields to the mesh
         updateFields()
         
@@ -683,9 +658,8 @@ while step<max_steps:
         swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=expt_name) 
         surfaceSwarm.petsc_save_checkpoint(swarmName='surfaceSwarm', index=step, outputPath=expt_name) 
     
-    if uw.mpi.rank == 0:
-        print(f'\nStokes solve: ')  
-        
+    uw.pprint(0, f'\nStokes solve: ')
+
     stokes.solve(zero_init_guess=False)
     
     ### get the timestep
@@ -713,8 +687,8 @@ swarm.petsc_save_checkpoint(swarmName='swarm', index=step, outputPath=expt_name)
 surfaceSwarm.petsc_save_checkpoint(swarmName='surfaceSwarm', index=step, outputPath=expt_name) 
 
 # %%
-import matplotlib.pyplot as plt
-with surfaceSwarm.access():
+if show_plot and uw.mpi.rank == 0:
+    import matplotlib.pyplot as plt
     plt.scatter(surfaceSwarm.data[:,0], surfaceSwarm.data[:,1])
     print(surfaceSwarm.data.shape)
 

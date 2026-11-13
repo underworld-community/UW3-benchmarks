@@ -3,7 +3,9 @@
 # [Recreated from the aspect documentaiton](https://aspect-documentation.readthedocs.io/en/latest/user/cookbooks/cookbooks/bunge_et_al_mantle_convection/doc/bunge_et_al_mantle_convection.html#the-bunge-et-al-mantle-convection-experiments)
 
 # +
+import sys
 import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 
 import underworld3 as uw
@@ -24,10 +26,21 @@ from underworld3.utilities import generateXdmf
 # options["dm_plex_check_all"] = None
 # options.getAll()
 
+params = uw.Params(
+    uw_benchmark           = 3,
+    uw_n_steps             = 31,
+    uw_res                 = 0.075,
+    uw_boundary_conditions = 'NS',
+)
+
+benchmark          = params.uw_benchmark
+nsteps             = params.uw_n_steps
+res                = params.uw_res
+boundaryConditions = params.uw_boundary_conditions
+
+show_plot = False
+
 # +
-benchmark = 3
-
-
 if benchmark == 2:
     visc_UM = 5.8e22       
     visc_LM = 30*visc_UM
@@ -50,13 +63,9 @@ else:
 # -
 
 
-### number of steps of the model
-nsteps = 31
-
 # +
 ### FS - free slip top, no slip base
 ### NS - no slip top and base
-boundaryConditions = 'NS'
 
 if boundaryConditions == 'FS':
     if visc_UM == visc_LM:
@@ -159,8 +168,6 @@ T_cmb  = nd(T_1 * u.kelvin)
 # -
 
 
-res = 0.075
-
 # +
 # meshball = uw.meshing.Annulus_internalBoundary(radiusInner=rI, radiusInternal=rInt, radiusOuter=rO, cellSize=res, degree=1, qdegree=2)
 meshball = uw.meshing.AnnulusInternalBoundary(radiusOuter=rO, radiusInternal=rInt, radiusInner=rI, cellSize=res, cellSize_Outer=res, qdegree=3)
@@ -189,36 +196,26 @@ meshr        = uw.discretisation.MeshVariable(r"r", meshball, 1, degree=1)
 # check the mesh if in a notebook / serial
 
 
-if uw.mpi.size == 1:
-    import numpy as np
-    import pyvista as pv
-    import vtk
+if show_plot:
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            import pyvista as pv
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.anti_aliasing = 'ssaa'
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
+            pv.global_theme.window_size = [750, 750]
+            pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
+            pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
 
-    meshball.vtk(outputPath + "annulus_mesh.vtk")
-    pvmesh = pv.read(outputPath + "annulus_mesh.vtk")
+            pl = pv.Plotter()
 
-    pl = pv.Plotter()
-    
+            # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
+            pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
-    
-    
-
-    pl.show()
+            pl.show()
 
 # +
 ### Create stokes
 
-stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln, solver_name="stokes")
+stokes = Stokes(meshball, velocityField=v_soln, pressureField=p_soln)
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
 
@@ -232,7 +229,7 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     meshball,
     u_Field=T_soln,
     V_fn=v_soln,
-    solver_name="adv_diff")
+)
 
 
 # +
@@ -259,11 +256,10 @@ adv_diff.add_dirichlet_bc(T_surf, meshball.boundaries.Upper.name)
 ### Setup the swarm
 swarm = uw.swarm.Swarm(mesh=meshball)
 material = uw.swarm.IndexSwarmVariable("M", swarm, indices=2, proxy_continuous=True)
-swarm.populate_petsc(2)
+swarm.populate(fill_param=2)
 
-with swarm.access(material):
-    material.data[:] = 0
-    material.data[np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2) <= rInt] = 1
+material.data[:] = 0
+material.data[np.sqrt(swarm.data[:,0]**2 + swarm.data[:,1]**2) <= rInt] = 1
 
 # +
 ### assign material viscosity
@@ -329,44 +325,37 @@ else:
 # +
 ### Visualise the swarm
 
-if uw.mpi.size == 1:
-    import numpy as np
-    import pyvista as pv
-    import vtk
+if show_plot:
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            import pyvista as pv
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-    pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
+            pv.global_theme.window_size = [750, 750]
+            pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
+            pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
 
-    pv.read(outputPath + "annulus_mesh.vtk")
+            pl = pv.Plotter()
 
-    pl = pv.Plotter()
-    
-    with swarm.access('M'):
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
-        
-        point_cloud = pv.PolyData(points)
-        
-        point_cloud.point_data["M"] = material.data.copy()
-        
-    pl.add_points(
-        point_cloud,
-        cmap="coolwarm",
-        render_points_as_spheres=False,
-        point_size=10,
-        opacity=0.66,
-    )
+            points = np.zeros((swarm.data.shape[0], 3))
+            points[:, 0] = swarm.data[:, 0]
+            points[:, 1] = swarm.data[:, 1]
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
-    pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+            point_cloud = pv.PolyData(points)
 
-    pl.show()
+            point_cloud.point_data["M"] = material.data.copy()
+
+            pl.add_points(
+                point_cloud,
+                cmap="coolwarm",
+                render_points_as_spheres=False,
+                point_size=10,
+                opacity=0.66,
+            )
+
+            # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
+            pl.add_mesh(pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, use_transparency=False, opacity=0.5)
+
+            pl.show()
 
 # +
 nodal_rho_calc = uw.systems.Projection(meshball, density_proj)
@@ -405,65 +394,55 @@ initial_T = (r-Ri)/(Ro-Ri)*(To-Ti)+Ti + A*sympy.sin(7*th) + B*sympy.sin(13*th) +
 
 
 with meshball.access(T_soln):
-    T_soln.data[:,0] = nd(uw.function.evalf(initial_T, T_soln.coords, meshball.N) * u.kelvin)
-    
-    T0 = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N) * u.kelvin)
-    
-rho_0 = uw.function.evaluate(T_density, T_soln.coords, meshball.N) 
+    T_soln.data[:,0] = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N).squeeze() * u.kelvin)
+
+T0 = nd(uw.function.evaluate(initial_T, T_soln.coords, meshball.N).squeeze() * u.kelvin)
+
+rho_0 = uw.function.evaluate(T_density, T_soln.coords, meshball.N).squeeze()
 
 with meshball.access(meshr):
-    meshr.data[:, 0] = uw.function.evalf(sympy.sqrt(x**2 + y**2), meshball.data, meshball.N)  # cf radius_fn which is 0->1
-    
+    meshr.data[:, 0] = uw.function.evaluate(sympy.sqrt(x**2 + y**2), meshball.X.coords, meshball.N).squeeze()  # cf radius_fn which is 0->1
+
 
 
 # +
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+if show_plot:
+    with uw.selective_ranks(0) as should_execute:
+        if should_execute:
+            import pyvista as pv
 
-    import numpy as np
-    import pyvista as pv
-    import vtk
+            pv.global_theme.window_size = [750, 750]
+            pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
 
-    pv.global_theme.background = "white"
-    pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
+            usol = stokes.u.data.copy()
 
-    # pv.start_xvfb()
+            pvmesh.point_data["T"] = uw.function.evaluate(T_soln.sym[0], meshball.X.coords)
 
-    pv.read(outputPath + "annulus_mesh.vtk")
+            pl = pv.Plotter(window_size=(750, 750))
 
-    with meshball.access():
-        usol = stokes.u.data.copy()
+            # pl.add_mesh(pvmesh,'Black', 'wireframe')
 
-    pvmesh.point_data["T"] = uw.function.evaluate(T_soln.sym[0], meshball.data)
+            pl.add_mesh(
+                pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
+            )
 
-    pl = pv.Plotter(window_size=(750, 750))
+            points = np.zeros((swarm.data.shape[0], 3))
+            points[:, 0] = swarm.data[:, 0]
+            points[:, 1] = swarm.data[:, 1]
 
-    # pl.add_mesh(pvmesh,'Black', 'wireframe')
+            point_cloud = pv.PolyData(points)
 
-    pl.add_mesh(
-        pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
-    )
+            point_cloud.point_data["M"] = material.data.copy()
 
-    with swarm.access('M'):
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
-        
-        point_cloud = pv.PolyData(points)
-        
-        point_cloud.point_data["M"] = material.data.copy()
-        
-    pl.add_points(point_cloud, render_points_as_spheres=False, point_size=10, opacity=0.1)
-    
-    # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
+            pl.add_points(point_cloud, render_points_as_spheres=False, point_size=10, opacity=0.1)
 
-    # pl.add_points(pdata)
+            # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
 
-    pl.show(cpos="xy")
+            # pl.add_points(pdata)
+
+            pl.show(cpos="xy")
 
 
 # -
@@ -471,18 +450,15 @@ if uw.mpi.size == 1:
 # - plot figs
 # - save data
 
-def plotFig(var='T',arrowSize=500):    
-    import numpy as np
+def plotFig(var='T',arrowSize=500):
     import pyvista as pv
-    import vtk
 
-    pv.read(outputPath + "annulus_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(meshball)
 
-    with meshball.access():
-        usol = stokes.u.data.copy()
-        pvmesh.point_data["T0"] = nd(uw.function.evaluate(initial_T,  meshball.data, meshball.N) * u.kelvin)
+    usol = stokes.u.data.copy()
+    pvmesh.point_data["T0"] = nd(uw.function.evaluate(initial_T,  meshball.X.coords, meshball.N) * u.kelvin)
 
-    pvmesh.point_data["T"] = uw.function.evaluate(T_soln.sym[0], meshball.data)
+    pvmesh.point_data["T"] = uw.function.evaluate(T_soln.sym[0], meshball.X.coords)
     
     pvmesh.point_data["dT"] =  pvmesh.point_data["T"] - pvmesh.point_data["T0"]
 
@@ -509,13 +485,14 @@ def plotFig(var='T',arrowSize=500):
 
 # +
 def saveData(step, outputPath, time):
-    
+
     ### update projections first
     updateFields(time)
     ### save mesh variables
-    meshball.petsc_save_checkpoint(step, meshVars=[v_soln, p_soln, T_soln, density_proj, timeField], outputPath=outputPath)
+    meshball.write_timestep("checkpoint", index=step, outputPath=outputPath,
+                            meshVars=[v_soln, p_soln, T_soln, density_proj, timeField])
     ### save the swarm
-    swarm.petsc_save_checkpoint('swarm', step, outputPath=outputPath)
+    swarm.write_timestep("checkpoint", "swarm", index=step, outputPath=outputPath)
     
 
 # -
@@ -537,24 +514,21 @@ time_dim = 0.
 # Convection model / update in time
 
 while step < nsteps:
-    
+
     time_dim = dim(time, u.megayear)
 
-    if uw.mpi.rank == 0:
-        print(f"\n\nTimestep: {step}, time: {time_dim}\n\n")
-    
-    if step % 5 == 0:
-        saveData(step=step, outputPath=outputPath, time = time)
-        
-
+    uw.pprint(0, f"\n\nTimestep: {step}, time: {time_dim}\n\n")
 
     stokes.solve()
     delta_t = adv_diff.estimate_dt()
     adv_diff.solve(timestep=delta_t)
 
+    if step % 5 == 0:
+        saveData(step=step, outputPath=outputPath, time=time)
+
     # stats then loop
     tstats = T_soln.stats()
-        
+
     step += 1
     time += delta_t
     
@@ -565,8 +539,10 @@ while step < nsteps:
 # -
 
 
-plotFig(var='T', arrowSize=1e-2)
+if show_plot:
+    plotFig(var='T', arrowSize=1e-2)
 
-plotFig(var='dT', arrowSize=1e-2)
+if show_plot:
+    plotFig(var='dT', arrowSize=1e-2)
 
 

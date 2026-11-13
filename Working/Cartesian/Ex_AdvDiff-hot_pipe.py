@@ -27,6 +27,9 @@
 # - 0 - for the mesh only version
 # - 1 - for the swarm version
 
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 import underworld3 as uw
 import numpy as np
 import sympy
@@ -40,15 +43,19 @@ if uw.mpi.size == 1:
 # ### Set up variables of the model
 
 # +
-res = 64
+params = uw.Params(
+    uw_res      = 32,
+    uw_n_steps  = 1,
+    uw_kappa    = 1.0,
+    uw_velocity = None,   # if None, defaults to 1/uw_res
+)
 
+res      = params.uw_res
+nsteps   = params.uw_n_steps
+kappa    = params.uw_kappa
+velocity = params.uw_velocity if params.uw_velocity is not None else 1.0 / res
 
-nsteps = 1
-
-
-kappa = 1.0 # diffusive constant
-
-velocity = 1/res #/res
+show_plot = False
 
 ### min and max temps
 tmin = 0.5 # temp min
@@ -99,7 +106,6 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     mesh,
     u_Field=T,
     V_fn=v,
-    solver_name="adv_diff",
 )
 
 # ### Set up properties of the adv_diff solver
@@ -118,29 +124,27 @@ adv_diff.add_dirichlet_bc(tmin, "Top")
 # adv_diff.add_dirichlet_bc(0., "Right")
 
 
-with mesh.access(v):
-    # initialise fields
-    # v.data[:,0] = -1*v.coords[:,1]
-    v.data[:,1] =  velocity
+# initialise fields
+# v.data[:,0] = -1*v.coords[:,1]
+v.data[:,1] =  velocity
 
-with mesh.access(T):
-    T.data[...] = tmin
+T.data[...] = tmin
 
-    pipePosition = ((ymax - ymin) - pipe_thickness) / 2.0
+pipePosition = ((ymax - ymin) - pipe_thickness) / 2.0
 
-    T.data[
-        (T.coords[:, 1] >= (T.coords[:, 1].min() + pipePosition))
-        & (T.coords[:, 1] <= (T.coords[:, 1].max() - pipePosition))
-    ] = tmax
+T.data[
+    (T.coords[:, 1] >= (T.coords[:, 1].min() + pipePosition))
+    & (T.coords[:, 1] <= (T.coords[:, 1].max() - pipePosition))
+] = tmax
 
-    T_old = np.copy(T.data[:,0])
+T_old = np.copy(T.data[:,0])
 
 # ### Create points to sample the UW results
 
 # +
 ### y coords to sample
 sample_y = np.arange(
-    mesh.data[:, 1].min(), mesh.data[:, 1].max(), 0.1 * mesh.get_min_radius()
+    mesh.X.coords[:, 1].min(), mesh.X.coords[:, 1].max(), 0.1 * mesh.get_min_radius()
 )  ### Vertical profile
 
 ### x coords to sample
@@ -152,7 +156,7 @@ sample_points[:, 1] = sample_y
 # -
 
 ### get the initial temp profile
-T_orig = uw.function.evaluate(T.sym[0], sample_points)
+T_orig = uw.function.evaluate(T.sym[0], sample_points).flatten()
 
 
 # ### 1D diffusion function
@@ -197,26 +201,15 @@ def diffusion_1D(sample_points, T0, diffusivity, vel, time_1D):
 def plot_fig():
     if uw.mpi.size == 1:
 
-        import numpy as np
         import pyvista as pv
-        import vtk
 
-        pv.global_theme.background = "white"
         pv.global_theme.window_size = [750, 250]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-
-        # pv.start_xvfb()
-        mesh.vtk(outputPath + "advDiff_mesh.vtk")
-        # mesh.vtk("ignore_periodic_mesh.vtk")
-        pvmesh = pv.read(outputPath + "advDiff_mesh.vtk")
+        pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
         # pvmesh.point_data["S"]  = uw.function.evaluate(s_soln.fn, meshbox.data)
 
-        with mesh.access():
-            vsol = v.data.copy()
-            pvmesh["T"] = uw.function.evalf(T.sym, mesh.data)
+        vsol = v.data.copy()
+        pvmesh["T"] = uw.function.evaluate(T.sym, mesh.data)
 
         arrow_loc = np.zeros((v.coords.shape[0], 3))
         arrow_loc[:, 0:2] = v.coords[...]
@@ -263,7 +256,8 @@ def plot_fig():
         # return vsol
 
 
-plot_fig()
+if show_plot:
+    plot_fig()
 
 # ### Solver loop
 
@@ -297,15 +291,15 @@ while step < nsteps:
 
 # ### Check the results
 
-plot_fig()
+if show_plot:
+    plot_fig()
 
-with mesh.access(T):
-    T_new = np.copy(T.data[:,0])
+T_new = np.copy(T.data[:,0])
 
 # +
 """compare 1D and 2D models"""
 
-T_UW = uw.function.evalf(T.sym[0], sample_points)
+T_UW = uw.function.evaluate(T.sym[0], sample_points).flatten()
 
 
 T_1D_model = diffusion_1D(

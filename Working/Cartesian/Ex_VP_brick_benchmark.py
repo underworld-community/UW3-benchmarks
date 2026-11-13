@@ -6,6 +6,9 @@
 # [UWGeodynamics (UW2) version](https://github.com/underworldcode/underworld2/blob/master/docs/UWGeodynamics/benchmarks/Kaus_BrickBenchmark-Compression.ipynb)
 
 # %%
+import sys
+import petsc4py
+petsc4py.init(sys.argv)
 import underworld3 as uw
 import numpy as np
 import sympy
@@ -13,11 +16,17 @@ import sympy
 import os
 
 # %%
-### plot figs
-if uw.mpi.size == 1:
-    render = True
-else:
-    render = False
+params = uw.Params(
+    uw_res_x         = 128,
+    uw_res_y         = 32,
+    uw_cohesion_mpa  = 40.0,
+)
+
+resx         = params.uw_res_x
+resy         = params.uw_res_y
+cohesion_mpa = params.uw_cohesion_mpa
+
+show_plot = False
 
 
 # %%
@@ -67,7 +76,7 @@ nd_gravity = nd( 9.81 * u.meter / u.second**2 )
 
 # %%
 ### Key model parameters
-nd_C = nd(40 *u.megapascal)
+nd_C = nd(cohesion_mpa * u.megapascal)
 
 # %% [markdown]
 # Set up dimensions of model and sinking block
@@ -81,8 +90,6 @@ BrickHeight = nd(625.*u.meter)
 BrickLength = nd(1250.*u.meter)
 
 ### set the res in x and y
-resx = 128
-resy = 32
 
 ### add material index
 BrickIndex = 0
@@ -144,36 +151,24 @@ swarm.populate(fill_param=2)
 
 # %%
 for i in [material, ]:
-        with swarm.access(i):
-            i.data[:] = BGIndex
-            i.data[(swarm.data[:,1] <= BrickHeight) & 
-                  (swarm.data[:,0] >= (((xmax - xmin) / 2.) - (BrickLength / 2.)) ) & 
-                  (swarm.data[:,0] <= (((xmax - xmin) / 2.) + (BrickLength / 2.)) )] = BrickIndex
+        i.data[:] = BGIndex
+        i.data[(swarm.data[:,1] <= BrickHeight) & 
+              (swarm.data[:,0] >= (((xmax - xmin) / 2.) - (BrickLength / 2.)) ) & 
+              (swarm.data[:,0] <= (((xmax - xmin) / 2.) + (BrickLength / 2.)) )] = BrickIndex
 
 
 # %%
-with mesh.access(rank):
-    rank.data[:,] = uw.mpi.rank
+rank.data[:,] = uw.mpi.rank
 
 # %%
 # check the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
+if show_plot and uw.mpi.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    # pv.start_xvfb()
-
-    mesh.vtk(outputPath + "stokes_brick_VP_mesh.vtk")
-    pvmesh = pv.read(outputPath + "stokes_brick_VP_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
     # with mesh1.access():
         # usol = stokes.u.data.copy()
@@ -188,15 +183,14 @@ if uw.mpi.size == 1:
     #     pvmesh, cmap="coolwarm", edge_color="Black", show_edges=True, scalars="T", use_transparency=False, opacity=0.5
     # )
 
-    with swarm.access('M'):
-        points = np.zeros((swarm.particle_coordinates.data.shape[0], 3))
-        points[:, 0] = swarm.particle_coordinates.data[:, 0]
-        points[:, 1] = swarm.particle_coordinates.data[:, 1]
-        
-        point_cloud = pv.PolyData(points)
-        
-        point_cloud.point_data["M"] = material.data.copy()
-        
+    points = np.zeros((swarm.data.shape[0], 3))
+    points[:, 0] = swarm.data[:, 0]
+    points[:, 1] = swarm.data[:, 1]
+
+    point_cloud = pv.PolyData(points)
+
+    point_cloud.point_data["M"] = material.data.copy()
+
     pl.add_points(point_cloud, render_points_as_spheres=False, point_size=5, opacity=0.5)
     
     # pl.add_arrows(arrow_loc2, arrow_length2, mag=1.0e-1)
@@ -251,31 +245,21 @@ def updateFields():
 # %%
 def plot_mat():
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
-
-    pvmesh = pv.read(outputPath + "stokes_brick_VP_mesh.vtk")
-
-    with swarm.access():
-        points = np.zeros((swarm.data.shape[0],3))
-        points[:,0] = swarm.data[:,0]
-        points[:,1] = swarm.data[:,1]
-        points[:,2] = 0.0
+    points = np.zeros((swarm.data.shape[0],3))
+    points[:,0] = swarm.data[:,0]
+    points[:,1] = swarm.data[:,1]
+    points[:,2] = 0.0
 
     point_cloud = pv.PolyData(points)
     
 
-    with swarm.access():
-        point_cloud.point_data["M"] = material.data.copy()
-        
+    point_cloud.point_data["M"] = material.data.copy()
+
 
 
 
@@ -301,28 +285,19 @@ def plot_mat():
 # %%
 def plot_field(field):
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
     updateFields()
 
-    pv.global_theme.background = 'white'
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = 'panel'
-    pv.global_theme.smooth_shading = True
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
+
+    pvmesh.point_data["edot"] = strain_rate_inv2.rbf_interpolate(mesh.data, nnn=1)
+    pvmesh.point_data["eta"]  = node_viscosity.rbf_interpolate(mesh.data, nnn=1)
 
 
-    pvmesh = pv.read(outputPath + "stokes_brick_VP_mesh.vtk")
 
-    with mesh.access(node_viscosity, strain_rate_inv2):
-        pvmesh.point_data["edot"] = strain_rate_inv2.rbf_interpolate(mesh.data, nnn=1)
-        pvmesh.point_data["eta"]  = node_viscosity.rbf_interpolate(mesh.data, nnn=1)
 
-    
-
-        
 
 
 
@@ -365,7 +340,7 @@ stokes.add_dirichlet_bc((-vel,0.0), "Right")
 # #### Visualise swarm and passive tracers
 
 # %%
-if render == True & uw.mpi.size==1:
+if show_plot and uw.mpi.size == 1:
     plot_mat()
 
 # %% [markdown]
@@ -497,16 +472,16 @@ profile1 = np.vstack([x,y1]).T
 
 
 # %%
-SR_profile0 = uw.function.evaluate(strain_rate_inv2.sym, profile0)
+SR_profile0 = uw.function.evaluate(strain_rate_inv2.sym, profile0).squeeze()
 
-SR_profile1 = uw.function.evaluate(strain_rate_inv2.sym, profile1)
+SR_profile1 = uw.function.evaluate(strain_rate_inv2.sym, profile1).squeeze()
 
 
 # %%
 import scipy
 
-peaks0, _ = scipy.signal.find_peaks(SR_profile0[:,0], height=1)
-peaks1, _ = scipy.signal.find_peaks(SR_profile1[:,0], height=1)
+peaks0, _ = scipy.signal.find_peaks(SR_profile0, height=1)
+peaks1, _ = scipy.signal.find_peaks(SR_profile1, height=1)
 
 # %%
 dx0 = (x[peaks0][0] - x[peaks1][0])
@@ -525,12 +500,13 @@ print(f'shear angle 0: {shear_angle0} degrees')
 print(f'shear angle 1: {shear_angle1} degrees')
 
 # %%
-import matplotlib.pyplot as plt
-plt.plot(x, SR_profile0, c='blue')
-plt.plot(x[peaks0], SR_profile0[peaks0], "x", c='blue')
+if show_plot and uw.mpi.rank == 0:
+    import matplotlib.pyplot as plt
+    plt.plot(x, SR_profile0, c='blue')
+    plt.plot(x[peaks0], SR_profile0[peaks0], "x", c='blue')
 
-plt.plot(x, SR_profile1, c='red')
-plt.plot(x[peaks1], SR_profile1[peaks1], "x", c='red')
+    plt.plot(x, SR_profile1, c='red')
+    plt.plot(x[peaks1], SR_profile1[peaks1], "x", c='red')
 
 # %%
 

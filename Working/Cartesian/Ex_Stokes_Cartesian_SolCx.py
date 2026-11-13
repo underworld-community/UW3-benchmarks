@@ -18,7 +18,9 @@
 #
 
 
+import sys
 import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 
 # +
@@ -31,10 +33,25 @@ import sympy
 from sympy import Piecewise
 # -
 
+# +
+params = uw.Params(
+    uw_res   = 64,
+    uw_eta_0 = 1.0,
+    uw_eta_1 = 1.0e6,
+    uw_nz    = 1,
+)
+
+res   = params.uw_res
+eta_0 = params.uw_eta_0
+eta_1 = params.uw_eta_1
+n_z   = params.uw_nz
+
+show_plot = False
+# -
+
 # #### Create the mesh
 
 # +
-res = 64
 # mesh = uw.meshing.UnstructuredSimplexBox(
 #     minCoords=(0.0, 0.0), maxCoords=(1.0, 1.0), cellSize=1 / 50, qdegree=2
 # )
@@ -59,13 +76,8 @@ x, y = mesh.CoordinateSystem.X
 # #### Parameters for the model
 
 # +
-eta_0 = 1.0
-eta_1 = 1.0e6
-
 x_c = 0.5
 f_0 = 1.0
-
-n_z = 1
 # -
 
 
@@ -157,7 +169,7 @@ stokes.solve()
 vel_soln_analytic = None
 
 ### get uw3 velocity
-vel_soln_uw3 = uw.function.evaluate(v.fn, mesh._centroids )
+vel_soln_uw3 = uw.function.evaluate(v.sym, mesh._centroids )
 
 # -
 
@@ -198,20 +210,12 @@ except ImportError:
 
 import mpi4py
 
-if mpi4py.MPI.COMM_WORLD.size == 1:
+if show_plot and mpi4py.MPI.COMM_WORLD.size == 1:
 
-    import numpy as np
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 1200]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-
-    mesh.vtk("tmp_mesh.vtk")
-    pvmesh = pv.read("tmp_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(mesh)
 
 
     pvmesh.point_data["P"] = uw.function.evaluate(p.sym[0], mesh.data)

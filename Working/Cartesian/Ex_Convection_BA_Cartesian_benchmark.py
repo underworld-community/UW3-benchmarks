@@ -9,23 +9,36 @@
 #
 
 # %%
+import sys
 import petsc4py
-from petsc4py import PETSc
+petsc4py.init(sys.argv)
 
 import underworld3 as uw
 from underworld3.systems import Stokes
 from underworld3 import function
 
-import os 
+import os
+import math
 import numpy as np
 import sympy
-from copy import deepcopy 
 
 # %% [markdown]
 # ### Set parameters to use 
 
 # %%
-Ra = 1e4 #### Rayleigh number
+params = uw.Params(
+    uw_Ra      = 1e4,
+    uw_res     = 16,
+    uw_n_steps = 5,
+    uw_infile  = None,
+)
+
+Ra     = params.uw_Ra
+res    = params.uw_res
+nsteps = params.uw_n_steps
+infile = params.uw_infile
+
+show_plot = False
 
 k = 1.0 #### diffusivity
 
@@ -36,24 +49,18 @@ tempMax   = 1.
 
 viscosity = 1
 
-res= 16             ### x and y res of box
-nsteps = 5        ### maximum number of time steps to run the first model 
-epsilon_lr = 1e-8   ### criteria for early stopping; relative change of the Vrms in between iterations  
+epsilon_lr = 1e-8   ### criteria for early stopping; relative change of the Vrms in between iterations
 
 ##########
 # parameters needed for saving checkpoints
 # can set outdir to None if you don't want to save anything
 outDir = "./output/convection_16/"
 save_every = 10
-#
-infile = None # set infile to a value if there's a checkpoint from a previous run that you want to start from
-# example infile settings: 
-# infile = outfile # will read outfile, but this file will be overwritten at the end of this run 
-# infile = outdir + "/convection_16" # file is that of 16 x 16 mesh   
+# example infile settings:
+# infile = "./output/convection_16/checkpoint"  # matches petsc_save_checkpoint output
 
-prev_res = None # if infile is not None, then this should be set to the previous model resolution
-
-os.makedirs(outDir, exist_ok = True)
+if uw.mpi.rank == 0:
+    os.makedirs(outDir, exist_ok=True)
 
 # %% [markdown]
 # ### Create mesh and variables
@@ -72,23 +79,15 @@ meshbox = uw.meshing.UnstructuredSimplexBox(
 # %%
 # visualise the mesh if in a notebook / serial
 
-if uw.mpi.size == 1:
-    import numpy as np
+if show_plot and uw.mpi.size == 1:
     import pyvista as pv
-    import vtk
 
-    pv.global_theme.background = "white"
     pv.global_theme.window_size = [750, 750]
-    pv.global_theme.antialiasing = True
-    pv.global_theme.jupyter_backend = "panel"
-    pv.global_theme.smooth_shading = True
-    pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
     pv.global_theme.camera["position"] = [0.0, 0.0, -5.0]
     pv.global_theme.show_edges = True
     pv.global_theme.axes.show = True
 
-    meshbox.vtk(outDir+"Convection_mesh.vtk")
-    pvmesh = pv.read(outDir+"Convection_mesh.vtk")
+    pvmesh = uw.visualisation.mesh_to_pv_mesh(meshbox)
     pl = pv.Plotter()
 
     # pl.add_mesh(pvmesh,'Black', 'wireframe', opacity=0.5)
@@ -100,7 +99,6 @@ if uw.mpi.size == 1:
 v_soln = uw.discretisation.MeshVariable("U", meshbox, meshbox.dim, degree=2) # degree = 2
 p_soln = uw.discretisation.MeshVariable("P", meshbox, 1, degree=1) # degree = 1
 t_soln = uw.discretisation.MeshVariable("T", meshbox, 1, degree=3) # degree = 3
-t_0 = uw.discretisation.MeshVariable("T0", meshbox, 1, degree=3) # degree = 3
 
 # additional variable for the gradient
 dTdZ = uw.discretisation.MeshVariable(r"\partial T/ \partial \Z", # FIXME: Z should not be a function of x, y, z 
@@ -133,7 +131,6 @@ stokes = Stokes(
     meshbox,
     velocityField=v_soln,
     pressureField=p_soln,
-    solver_name="stokes",
 )
 
 # try these
@@ -158,18 +155,15 @@ stokes = Stokes(
 # stokes.petsc_options.delValue("pc_use_amat")
 
 stokes.constitutive_model = uw.constitutive_models.ViscousFlowModel
-stokes.constitutive_model.Parameters.viscosity=viscosity
+stokes.constitutive_model.Parameters.viscosity = viscosity
+stokes.constitutive_model.Parameters.shear_viscosity_0 = viscosity
 stokes.saddle_preconditioner = 1.0 / viscosity
 
-
-sol_vel = sympy.Matrix([0., 0.])
-
-
 # Free-slip boundary conditions
-stokes.add_dirichlet_bc(sol_vel, "Left", [0])
-stokes.add_dirichlet_bc(sol_vel, "Right", [0])
-stokes.add_dirichlet_bc(sol_vel, "Top", [1])
-stokes.add_dirichlet_bc(sol_vel, "Bottom", [1])
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Bottom")
+stokes.add_dirichlet_bc((sympy.oo, 0.0), "Top")
+stokes.add_dirichlet_bc((0.0, sympy.oo), "Left")
+stokes.add_dirichlet_bc((0.0, sympy.oo), "Right")
 
 
 #### buoyancy_force = rho0 * (1 + (beta * deltaP) - (alpha * deltaT)) * gravity
@@ -184,7 +178,6 @@ adv_diff = uw.systems.AdvDiffusionSLCN(
     meshbox,
     u_Field=t_soln,
     V_fn=v_soln,
-    solver_name="adv_diff",
 )
 
 adv_diff.constitutive_model = uw.constitutive_models.DiffusionModel
@@ -204,58 +197,22 @@ adv_diff.petsc_options["pc_gamg_agg_nsmooths"] = 5
 # The initial temperature field is set to a sinusoidal perturbation. 
 
 # %%
-import math, sympy
-
 if infile is None:
     pertStrength = 0.1
-    deltaTemp = tempMax - tempMin
 
-    with meshbox.access(t_soln, t_0):
-        t_soln.data[:] = 0.
-        t_0.data[:] = 0.
+    T_init = (tempMin + (tempMax - tempMin) * (boxHeight - z)
+              + pertStrength * sympy.cos(sympy.pi * x / boxLength) * sympy.sin(sympy.pi * z / boxLength))
 
-    with meshbox.access(t_soln):
-        for index, coord in enumerate(t_soln.coords):
-            # print(index, coord)
-            pertCoeff = math.cos( math.pi * coord[0]/boxLength ) * math.sin( math.pi * coord[1]/boxLength )
-        
-            t_soln.data[index] = tempMin + deltaTemp*(boxHeight - coord[1]) + pertStrength * pertCoeff
-            t_soln.data[index] = max(tempMin, min(tempMax, t_soln.data[index]))
-            
-        
-    with meshbox.access(t_soln, t_0):
-        t_0.data[:,0] = t_soln.data[:,0]
+    t_soln.data[:] = 0.
+    t_soln.data[:, 0] = np.clip(uw.function.evaluate(T_init, t_soln.coords).squeeze(), tempMin, tempMax)
+    uw.pprint("Initializing temperature since infile is None ...")
 else:
-    meshbox_prev = uw.meshing.UnstructuredSimplexBox(
-                                                            minCoords=(0.0, 0.0), 
-                                                            maxCoords=(boxLength, boxHeight), 
-                                                            cellSize=1.0/prev_res,
-                                                            qdegree = 3,
-                                                            regular = False
-                                                        )
-    
-    # T should have high degree for it to converge
-    v_soln_prev = uw.discretisation.MeshVariable("U", meshbox_prev, meshbox_prev.dim, degree=2) # degree = 2
-    p_soln_prev = uw.discretisation.MeshVariable("P", meshbox_prev, 1, degree=1) # degree = 1
-    t_soln_prev = uw.discretisation.MeshVariable("T", meshbox_prev, 1, degree=3) # degree = 3
-
-    v_soln_prev.load_from_h5_plex_vector(infile + '.U.0.h5')
-    p_soln_prev.load_from_h5_plex_vector(infile + '.P.0.h5')
-    t_soln_prev.load_from_h5_plex_vector(infile + '.T.0.h5')
-
-    with meshbox.access(v_soln, t_soln, p_soln):    
-        t_soln.data[:, 0] = uw.function.evaluate(t_soln_prev.sym[0], t_soln.coords)
-        p_soln.data[:, 0] = uw.function.evaluate(p_soln_prev.sym[0], p_soln.coords)
-
-        #for velocity, encounters errors when trying to interpolate in the non-zero boundaries of the mesh variables 
-        v_coords = deepcopy(v_soln.coords)
-
-        v_soln.data[:] = uw.function.evaluate(v_soln_prev.fn, v_coords)
-
-    del meshbox_prev
-    del v_soln_prev
-    del p_soln_prev
-    del t_soln_prev
+    t_soln.read_timestep(data_filename=infile,
+                         data_name="T",
+                         index=0,
+                         outputPath=outDir)
+    uw.pprint("Reading t_soln from checkpoint file ...")
+    uw.pprint(f"min/max temp: {t_soln.data.min():.4f} / {t_soln.data.max():.4f}", proc="all")
 
 
 # %% [markdown]
@@ -273,17 +230,11 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
     """
     if uw.mpi.size == 1:
 
-        import numpy as np
         import pyvista as pv
-        import vtk
 
-        pv.global_theme.background = "white"
         pv.global_theme.window_size = [500, 500]
+        pvmesh = uw.visualisation.mesh_to_pv_mesh(meshbox)
         pv.global_theme.anti_aliasing = None #"ssaa", "msaa", "fxaa", or None
-        #pv.global_theme.jupyter_backend = "panel"
-        pv.global_theme.smooth_shading = True
-
-        pvmesh = pv.read(outDir+"Convection_mesh.vtk")
 
         velocity = np.zeros((meshbox.data.shape[0], 3))
         velocity[:, 0] = uw.function.evaluate(v_field.sym[0], meshbox.data)
@@ -297,8 +248,7 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
 
         point_cloud = pv.PolyData(points)
 
-        with meshbox.access():
-            point_cloud.point_data[s_field_name] = uw.function.evaluate(s_field.fn, points[:, 0:2])
+        point_cloud.point_data[s_field_name] = uw.function.evaluate(s_field.fn, points[:, 0:2])
 
         skip = 2
         num_row = len(meshbox._centroids[::skip, 0])
@@ -321,17 +271,16 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
  
         pl = pv.Plotter()
 
-        with meshbox.access():
-            skip = 2
-        
-            num_row = len(v_field.coords[::skip, 0:2])
+        skip = 2
 
-            arrow_loc = np.zeros((num_row, 3))
-            arrow_loc[:, 0:2] = v_field.coords[::skip, 0:2]
+        num_row = len(v_field.coords[::skip, 0:2])
 
-            arrow_length = np.zeros((num_row, 3))
-            arrow_length[:, 0] = v_field.data[::skip, 0]
-            arrow_length[:, 1] = v_field.data[::skip, 1]
+        arrow_loc = np.zeros((num_row, 3))
+        arrow_loc[:, 0:2] = v_field.coords[::skip, 0:2]
+
+        arrow_length = np.zeros((num_row, 3))
+        arrow_length[:, 0] = v_field.data[::skip, 0]
+        arrow_length[:, 1] = v_field.data[::skip, 1]
 
         pl = pv.Plotter()
 
@@ -354,7 +303,7 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
 
         # pl.add_points(pdata)
 
-        pl.show(cpos="xy", jupyter_backend = "panel")
+        pl.show(cpos="xy", jupyter_backend = "trame")
 
         if save_fname is not None:
             #pl.save_graphic(save_fname, dpi = 300)
@@ -365,87 +314,8 @@ def plotFig(meshbox, s_field, v_field, s_field_name, save_fname = None, with_arr
         pvmesh.clear_point_data()
         
         
-plotFig(meshbox, t_soln, v_soln, "T", save_fname = None, with_arrows = False, cmap = "coolwarm")
-
-# %%
-def plot_T_mesh(filename):
-
-    if uw.mpi.size == 1:
-
-        import numpy as np
-        import pyvista as pv
-        import vtk
-
-        pv.global_theme.background = "white"
-        pv.global_theme.window_size = [750, 750]
-        pv.global_theme.antialiasing = True
-        pv.global_theme.jupyter_backend = "pythreejs"
-        pv.global_theme.smooth_shading = True
-        pv.global_theme.camera["viewup"] = [0.0, 1.0, 0.0]
-        pv.global_theme.camera["position"] = [0.0, 0.0, 5.0]
-
-        pvmesh = pv.read(outDir+"Convection_mesh.vtk")
-
-        velocity = np.zeros((meshbox.data.shape[0], 3))
-        velocity[:, 0] = uw.function.evaluate(v_soln.sym[0], meshbox.data)
-        velocity[:, 1] = uw.function.evaluate(v_soln.sym[1], meshbox.data)
-
-        pvmesh.point_data["V"] = velocity / 333
-        pvmesh.point_data["T"] = uw.function.evaluate(t_soln.fn, meshbox.data)
-
-        # point sources at cell centres
-
-        cpoints = np.zeros((meshbox._centroids.shape[0] // 4, 3))
-        cpoints[:, 0] = meshbox._centroids[::4, 0]
-        cpoints[:, 1] = meshbox._centroids[::4, 1]
-        cpoint_cloud = pv.PolyData(cpoints)
-
-        pvstream = pvmesh.streamlines_from_source(
-            cpoint_cloud,
-            vectors="V",
-            integrator_type=45,
-            integration_direction="forward",
-            compute_vorticity=False,
-            max_steps=25,
-            surface_streamlines=True,
-        )
-
-        points = np.zeros((t_soln.coords.shape[0], 3))
-        points[:, 0] = t_soln.coords[:, 0]
-        points[:, 1] = t_soln.coords[:, 1]
-
-        point_cloud = pv.PolyData(points)
-
-        with meshbox.access():
-            point_cloud.point_data["T"] = t_soln.data.copy()
-
-        pl = pv.Plotter()
-
-        pl.add_mesh(
-            pvmesh,
-            cmap="coolwarm",
-            edge_color="Gray",
-            show_edges=True,
-            scalars="T",
-            use_transparency=False,
-            opacity=0.5,
-        )
-
-        pl.add_points(point_cloud, cmap="coolwarm", render_points_as_spheres=False, point_size=10, opacity=0.5)
-
-        pl.add_mesh(pvstream, opacity=0.4)
-
-        pl.remove_scalar_bar("T")
-        pl.remove_scalar_bar("V")
-
-        pl.screenshot(filename="{}.png".format(filename), window_size=(1280, 1280), return_img=False)
-        # pl.show()
-        pl.close()
-
-        pvmesh.clear_data()
-        pvmesh.clear_point_data()
-
-        pv.close_all()
+if show_plot:
+    plotFig(meshbox, t_soln, v_soln, "T", save_fname = None, with_arrows = False, cmap = "coolwarm")
 
 # %% [markdown]
 # #### RMS velocity
@@ -461,9 +331,9 @@ def plot_T_mesh(filename):
 # %%
 # underworld3 function for calculating the rms velocity 
 
-def v_rms(mesh = meshbox, v_solution = v_soln): 
+def v_rms(mesh = meshbox, v_solution = v_soln):
     # v_soln must be a variable of mesh
-    v_rms = math.sqrt(uw.maths.Integral(mesh, v_solution.fn.dot(v_solution.fn)).evaluate())
+    v_rms = np.sqrt(uw.maths.Integral(mesh, v_solution.fn.dot(v_solution.fn)).evaluate())
     return v_rms
 
 #print(f'initial v_rms = {v_rms()}')
@@ -533,42 +403,39 @@ while t_step < nsteps:
     vrmsVal[t_step] = v_rms()
     timeVal[t_step] = time
 
-    stokes.solve(zero_init_guess=True) # originally True
-    delta_t = 0.5 * stokes.estimate_dt() # originally 0.5
-    adv_diff.solve(timestep=delta_t, zero_init_guess=False) # originally False
+    stokes.solve(zero_init_guess=True)
+    t_adv = adv_diff.estimate_dt()
+    delta_t = 5 * t_adv
+    adv_diff.solve(timestep=delta_t, zero_init_guess=False)
 
     # calculate Nusselt number
     dTdZ_calc.solve()
-    up_int = surface_integral(meshbox, dTdZ.sym[0], up_surface_defn_fn)
-    lw_int = surface_integral(meshbox, t_soln.sym[0], lw_surface_defn_fn)
+    up_int = uw.maths.BdIntegral(meshbox, dTdZ.sym[0], "Top").evaluate()
+    lw_int = uw.maths.BdIntegral(meshbox, t_soln.sym[0], "Bottom").evaluate()
+    NuVal[t_step] = -1. * up_int / lw_int
+    Nu = NuVal[t_step]
 
-    Nu = -up_int/lw_int
+    uw.pprint(f"Timestep {t_step}, dt {delta_t}, v_rms {vrmsVal[t_step]}, Nu {NuVal[t_step]}")
+    uw.pprint(f"min/max temp: {t_soln.data.min():.4f} / {t_soln.data.max():.4f}", proc="all", flush=True)
 
-    NuVal[t_step] = -up_int/lw_int
-
-    # stats then loop
-    tstats = t_soln.stats()
-
-    if uw.mpi.rank == 0:
-        print("Timestep {}, dt {}".format(t_step, delta_t))
-            
-        print(f't_rms = {t_soln.stats()[6]}, v_rms = {vrmsVal[t_step]}, Nu = {NuVal[t_step]}')
-
-        ''' save mesh variables together with mesh '''
-        if t_step % save_every == 0:
-            print("Saving checkpoint for time step: ", t_step)
-            meshbox.petsc_save_checkpoint(outputPath=outDir, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
-
+    ''' save mesh variables together with mesh '''
+    if t_step % save_every == 0 and t_step > 0:
+        uw.pprint(f"Saving checkpoint for time step: {t_step}")
+        meshbox.write_timestep("checkpoint", index=0, outputPath=outDir, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz])
 
     # early stopping criterion
-    if t_step > 1 and abs((NuVal[t_step] - NuVal[t_step - 1])/NuVal[t_step]) < epsilon_lr:
+    if t_step > 1 and abs((vrmsVal[t_step] - vrmsVal[t_step - 1])/vrmsVal[t_step - 1]) < epsilon_lr:
+        uw.pprint("Stopping criterion reached ...")
         break
 
     t_step += 1
     time   += delta_t
 
-# save final mesh variables in the run 
-meshbox.petsc_save_checkpoint(outputPath=outDir, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz], index=0)
+# save final mesh variables in the run
+uw.pprint("End of loop reached ...")
+uw.pprint(f"min/max temp: {t_soln.data.min():.4f} / {t_soln.data.max():.4f}", proc="all", flush=True)
+
+meshbox.write_timestep("checkpoint", index=0, outputPath=outDir, meshVars=[v_soln, p_soln, t_soln, dTdZ, sigma_zz])
 
 # %%
 if uw.mpi.rank == 0:
@@ -591,8 +458,7 @@ if uw.mpi.rank == 0:
 
 # %%
 # Calculate benchmark values
-if uw.mpi.rank == 0:
-    print("RMS velocity at the final time step is {}.".format(v_rms()))
+uw.pprint("RMS velocity at the final time step is {}.".format(v_rms()))
 
 # %% [markdown]
 # ### Post-run analysis
@@ -626,8 +492,7 @@ lw_int = surface_integral(meshbox, t_soln.sym[0], lw_surface_defn_fn)
 
 Nu = -up_int/lw_int
 
-if uw.mpi.rank == 0:
-    print("Calculated value of Nu: {}".format(Nu))
+uw.pprint("Calculated value of Nu: {}".format(Nu))
 
 # %% [markdown]
 # ### Calculate the non-dimensional gradients at the cell corners, $q_i$
@@ -651,10 +516,9 @@ q2 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array
 q3 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0.999999*boxLength, 0.]]))[0]
 q4 = -(boxHeight/(tempMax - tempMin))*uw.function.evaluate(dTdZ.sym[0], np.array([[0., 0.]]))[0]
 
-if uw.mpi.rank == 0:
-    print('Rayleigh number = {0:.1e}'.format(Ra))
-    print('q1 = {0:.3f}; q2 = {1:.3f}'.format(q1, q2))
-    print('q3 = {0:.3f}; q4 = {1:.3f}'.format(q3, q4))
+uw.pprint('Rayleigh number = {0:.1e}'.format(Ra))
+uw.pprint('q1 = {0:.3f}; q2 = {1:.3f}'.format(q1.item(), q2.item()))
+uw.pprint('q3 = {0:.3f}; q4 = {1:.3f}'.format(q3.item(), q4.item()))
 
 # %% [markdown]
 # ### Calculate the stress for comparison with benchmark value
@@ -732,18 +596,16 @@ e1 = calculate_topography(np.array([[0, 0.999999*boxHeight]]))
 e2 = calculate_topography(np.array([[0.999999*boxLength, 0.999999*boxHeight]]))
 
 # calculate the x-coordinate with zero stress
-with meshbox.access():
-    cond = meshbox.data[:, 1] == meshbox.data[:, 1].max()
-    up_surface_coords = meshbox.data[cond]
-    up_surface_coords[:, 1] = 0.999999*up_surface_coords[:, 1]
+cond = meshbox.X.coords[:, 1] == meshbox.X.coords[:, 1].max()
+up_surface_coords = meshbox.X.coords[cond]
+up_surface_coords[:, 1] = 0.999999*up_surface_coords[:, 1]
 
 abs_topo = abs(calculate_topography(up_surface_coords))
 
 min_abs_topo_coord = up_surface_coords[np.where(abs_topo == abs_topo.min())[0]].flatten()
 
-if uw.mpi.rank == 0:
-    print("Topography [x=0], [x=max] = {0:.2f}, {1:.2f}".format(e1[0], e2[0]))
-    print("x where topo = 0 is at {0:.6f}".format(min_abs_topo_coord[0]))
+uw.pprint("Topography [x=0], [x=max] = {0:.2f}, {1:.2f}".format(float(e1[0]), float(e2[0])))
+uw.pprint("x where topo = 0 is at {0:.6f}".format(min_abs_topo_coord[0]))
 
 
 
